@@ -16,6 +16,7 @@ func BuiltinMolecules() []BuiltinMolecule {
 		ResearchMolecule(),
 		InstallGoBinaryMolecule(),
 		BootstrapGasTownMolecule(),
+		PolecatWorkMolecule(),
 	}
 }
 
@@ -296,6 +297,97 @@ Print summary:
 - bd version
 
 Needs: sync-beads, install-paths`,
+	}
+}
+
+// PolecatWorkMolecule returns the polecat-work molecule definition.
+// This is the full polecat lifecycle from assignment to decommission.
+// It's an operational molecule that enables crash recovery and context survival.
+func PolecatWorkMolecule() BuiltinMolecule {
+	return BuiltinMolecule{
+		ID:    "mol-polecat-work",
+		Title: "Polecat Work",
+		Description: `Full polecat lifecycle from assignment to decommission.
+
+This molecule enables nondeterministic idempotence for polecat work.
+A polecat that crashes after any step can restart, read its molecule state,
+and continue from the last completed step. No work is lost.
+
+## Step: load-context
+Run gt prime and bd prime. Verify issue assignment.
+Check inbox for any relevant messages.
+
+Read the assigned issue and understand the requirements.
+Identify any blockers or missing information.
+
+## Step: implement
+Implement the solution. Follow codebase conventions.
+File discovered work as new issues with bd create.
+
+Make regular commits with clear messages.
+Keep changes focused on the assigned issue.
+Needs: load-context
+
+## Step: self-review
+Review your own changes. Look for:
+- Bugs and edge cases
+- Style issues
+- Missing error handling
+- Security concerns
+
+Fix any issues found before proceeding.
+Needs: implement
+
+## Step: verify-tests
+Run existing tests. Add new tests for new functionality.
+Ensure adequate coverage.
+
+` + "```" + `bash
+go test ./...
+` + "```" + `
+
+Fix any test failures before proceeding.
+Needs: implement
+
+## Step: rebase-main
+Rebase against main to incorporate any changes.
+Resolve conflicts if needed.
+
+` + "```" + `bash
+git fetch origin main
+git rebase origin/main
+` + "```" + `
+
+If there are conflicts, resolve them carefully and
+continue the rebase.
+Needs: self-review, verify-tests
+
+## Step: submit-merge
+Submit to merge queue. Create PR if needed.
+Verify CI passes.
+
+` + "```" + `bash
+gt done  # Signal work ready for merge queue
+` + "```" + `
+
+If there are CI failures, fix them before proceeding.
+Needs: rebase-main
+
+## Step: update-handoff
+Update handoff bead with final state.
+File any remaining work as issues.
+
+Document any important context for the next session
+or for anyone reviewing the work.
+Needs: submit-merge
+
+## Step: request-shutdown
+Send shutdown request to Witness.
+Wait for termination.
+
+The polecat is now ready to be cleaned up.
+Do not exit directly - wait for Witness to kill the session.
+Needs: update-handoff`,
 	}
 }
 

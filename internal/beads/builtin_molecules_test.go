@@ -5,8 +5,8 @@ import "testing"
 func TestBuiltinMolecules(t *testing.T) {
 	molecules := BuiltinMolecules()
 
-	if len(molecules) != 4 {
-		t.Errorf("expected 4 built-in molecules, got %d", len(molecules))
+	if len(molecules) != 6 {
+		t.Errorf("expected 6 built-in molecules, got %d", len(molecules))
 	}
 
 	// Verify each molecule can be parsed and validated
@@ -170,5 +170,63 @@ func TestInstallGoBinaryMolecule(t *testing.T) {
 	// install has no deps
 	if len(steps[0].Needs) != 0 {
 		t.Errorf("install should have no deps, got %v", steps[0].Needs)
+	}
+}
+
+func TestPolecatWorkMolecule(t *testing.T) {
+	mol := PolecatWorkMolecule()
+
+	if mol.ID != "mol-polecat-work" {
+		t.Errorf("expected ID 'mol-polecat-work', got %q", mol.ID)
+	}
+
+	if mol.Title != "Polecat Work" {
+		t.Errorf("expected Title 'Polecat Work', got %q", mol.Title)
+	}
+
+	steps, err := ParseMoleculeSteps(mol.Description)
+	if err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+
+	// Should have 8 steps: load-context, implement, self-review, verify-tests,
+	// rebase-main, submit-merge, update-handoff, request-shutdown
+	if len(steps) != 8 {
+		t.Errorf("expected 8 steps, got %d", len(steps))
+	}
+
+	expectedRefs := []string{
+		"load-context", "implement", "self-review", "verify-tests",
+		"rebase-main", "submit-merge", "update-handoff", "request-shutdown",
+	}
+	for i, expected := range expectedRefs {
+		if i >= len(steps) {
+			t.Errorf("missing step %d: expected %q", i, expected)
+			continue
+		}
+		if steps[i].Ref != expected {
+			t.Errorf("step %d: expected ref %q, got %q", i, expected, steps[i].Ref)
+		}
+	}
+
+	// Verify key dependencies
+	// load-context has no deps
+	if len(steps[0].Needs) != 0 {
+		t.Errorf("load-context should have no deps, got %v", steps[0].Needs)
+	}
+
+	// implement needs load-context
+	if len(steps[1].Needs) != 1 || steps[1].Needs[0] != "load-context" {
+		t.Errorf("implement should need load-context, got %v", steps[1].Needs)
+	}
+
+	// rebase-main needs self-review and verify-tests
+	if len(steps[4].Needs) != 2 {
+		t.Errorf("rebase-main should need 2 deps, got %v", steps[4].Needs)
+	}
+
+	// request-shutdown needs update-handoff
+	if len(steps[7].Needs) != 1 || steps[7].Needs[0] != "update-handoff" {
+		t.Errorf("request-shutdown should need update-handoff, got %v", steps[7].Needs)
 	}
 }
