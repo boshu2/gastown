@@ -549,14 +549,20 @@ func outputAttachmentStatus(ctx RoleContext) {
 
 // outputMoleculeContext checks if the agent is working on a molecule step and shows progress.
 func outputMoleculeContext(ctx RoleContext) {
-	// Applies to polecats, crew workers, and deacon
-	if ctx.Role != RolePolecat && ctx.Role != RoleCrew && ctx.Role != RoleDeacon {
+	// Applies to polecats, crew workers, deacon, and refinery
+	if ctx.Role != RolePolecat && ctx.Role != RoleCrew && ctx.Role != RoleDeacon && ctx.Role != RoleRefinery {
 		return
 	}
 
 	// For Deacon, use special patrol molecule handling
 	if ctx.Role == RoleDeacon {
 		outputDeaconPatrolContext(ctx)
+		return
+	}
+
+	// For Refinery, use special patrol molecule handling (auto-bonds on startup)
+	if ctx.Role == RoleRefinery {
+		outputRefineryPatrolContext(ctx)
 		return
 	}
 
@@ -747,6 +753,171 @@ func outputDeaconPatrolContext(ctx RoleContext) {
 	fmt.Println("   - Generate summary of patrol cycle")
 	fmt.Println("   - Squash: `bd --no-daemon mol squash <mol-id> --summary \"<summary>\"`")
 	fmt.Println("   - Loop back to spawn new wisp, or exit if context high")
+}
+
+// outputRefineryPatrolContext shows patrol molecule status for the Refinery.
+// Unlike other patrol roles, Refinery AUTO-BONDS its patrol molecule on startup
+// if one isn't already running. This ensures the merge queue is always monitored.
+func outputRefineryPatrolContext(ctx RoleContext) {
+	fmt.Println()
+	fmt.Printf("%s\n\n", style.Bold.Render("## 🔧 Refinery Patrol Status"))
+
+	// Refinery works from its own rig clone: <rig>/refinery/rig/
+	// Beads are in the current WorkDir
+	refineryBeadsDir := ctx.WorkDir
+
+	// Find mol-refinery-patrol molecules (exclude template)
+	// Look for in-progress patrol first (resumable)
+	cmdList := exec.Command("bd", "--no-daemon", "list", "--status=in_progress", "--type=epic")
+	cmdList.Dir = refineryBeadsDir
+	var stdoutList bytes.Buffer
+	cmdList.Stdout = &stdoutList
+	cmdList.Stderr = nil
+	errList := cmdList.Run()
+
+	hasPatrol := false
+	var patrolID string
+	var patrolLine string
+
+	if errList == nil {
+		lines := strings.Split(stdoutList.String(), "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "mol-refinery-patrol") && !strings.Contains(line, "[template]") {
+				parts := strings.Fields(line)
+				if len(parts) > 0 {
+					patrolID = parts[0]
+					patrolLine = line
+					hasPatrol = true
+					break
+				}
+			}
+		}
+	}
+
+	// Also check for open patrols with open children (active wisp)
+	if !hasPatrol {
+		cmdOpen := exec.Command("bd", "--no-daemon", "list", "--status=open", "--type=epic")
+		cmdOpen.Dir = refineryBeadsDir
+		var stdoutOpen bytes.Buffer
+		cmdOpen.Stdout = &stdoutOpen
+		cmdOpen.Stderr = nil
+		if cmdOpen.Run() == nil {
+			lines := strings.Split(stdoutOpen.String(), "\n")
+			for _, line := range lines {
+				if strings.Contains(line, "mol-refinery-patrol") && !strings.Contains(line, "[template]") {
+					parts := strings.Fields(line)
+					if len(parts) > 0 {
+						molID := parts[0]
+						// Check if this molecule has open children
+						cmdShow := exec.Command("bd", "--no-daemon", "show", molID)
+						cmdShow.Dir = refineryBeadsDir
+						var stdoutShow bytes.Buffer
+						cmdShow.Stdout = &stdoutShow
+						cmdShow.Stderr = nil
+						if cmdShow.Run() == nil {
+							showOutput := stdoutShow.String()
+							if strings.Contains(showOutput, "- open]") || strings.Contains(showOutput, "- in_progress]") {
+								hasPatrol = true
+								patrolID = molID
+								patrolLine = line
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if !hasPatrol {
+		// No active patrol - AUTO-SPAWN one
+		fmt.Println("Status: **No active patrol** - spawning mol-refinery-patrol...")
+		fmt.Println()
+
+		// Find the proto ID for mol-refinery-patrol
+		cmdCatalog := exec.Command("bd", "--no-daemon", "mol", "catalog")
+		cmdCatalog.Dir = refineryBeadsDir
+		var stdoutCatalog bytes.Buffer
+		cmdCatalog.Stdout = &stdoutCatalog
+		cmdCatalog.Stderr = nil
+
+		if cmdCatalog.Run() != nil {
+			fmt.Println(style.Dim.Render("Failed to list molecule catalog. Run `bd mol catalog` to troubleshoot."))
+			return
+		}
+
+		// Find mol-refinery-patrol in catalog
+		var protoID string
+		catalogLines := strings.Split(stdoutCatalog.String(), "\n")
+		for _, line := range catalogLines {
+			if strings.Contains(line, "mol-refinery-patrol") {
+				parts := strings.Fields(line)
+				if len(parts) > 0 {
+					protoID = parts[0]
+					break
+				}
+			}
+		}
+
+		if protoID == "" {
+			fmt.Println(style.Dim.Render("Proto mol-refinery-patrol not found in catalog. Run `bd mol register` first."))
+			return
+		}
+
+		// Spawn the wisp (default spawn creates wisp)
+		cmdSpawn := exec.Command("bd", "--no-daemon", "mol", "spawn", protoID, "--assignee", ctx.Rig+"/refinery")
+		cmdSpawn.Dir = refineryBeadsDir
+		var stdoutSpawn, stderrSpawn bytes.Buffer
+		cmdSpawn.Stdout = &stdoutSpawn
+		cmdSpawn.Stderr = &stderrSpawn
+
+		if err := cmdSpawn.Run(); err != nil {
+			fmt.Printf("Failed to spawn patrol: %s\n", stderrSpawn.String())
+			fmt.Println(style.Dim.Render("Run manually: bd --no-daemon mol spawn " + protoID))
+			return
+		}
+
+		// Parse the spawned molecule ID from output
+		spawnOutput := stdoutSpawn.String()
+		fmt.Printf("✓ Spawned patrol molecule\n")
+
+		// Extract molecule ID from spawn output (format: "Created molecule: gt-xxxx")
+		for _, line := range strings.Split(spawnOutput, "\n") {
+			if strings.Contains(line, "molecule:") || strings.Contains(line, "Created") {
+				parts := strings.Fields(line)
+				for _, p := range parts {
+					if strings.HasPrefix(p, "gt-") {
+						patrolID = p
+						break
+					}
+				}
+			}
+		}
+
+		if patrolID != "" {
+			fmt.Printf("Patrol ID: %s\n\n", patrolID)
+		}
+	} else {
+		// Has active patrol - show status
+		fmt.Println("Status: **Patrol Active**")
+		fmt.Printf("Patrol: %s\n\n", strings.TrimSpace(patrolLine))
+	}
+
+	// Show patrol work loop instructions
+	fmt.Println("**Refinery Patrol Work Loop:**")
+	fmt.Println("1. Check inbox: `gt mail inbox`")
+	fmt.Println("2. Check next step: `bd ready`")
+	fmt.Println("3. Execute the step (queue scan, process branch, tests, merge)")
+	fmt.Println("4. Close step: `bd close <step-id>`")
+	fmt.Println("5. Check next: `bd ready`")
+	fmt.Println("6. At cycle end (burn-or-loop step):")
+	fmt.Println("   - Generate summary of patrol cycle")
+	fmt.Println("   - Squash: `bd --no-daemon mol squash <mol-id> --summary \"<summary>\"`")
+	fmt.Println("   - Loop back to spawn new wisp, or exit if context high")
+	if patrolID != "" {
+		fmt.Println()
+		fmt.Printf("Current patrol ID: %s\n", patrolID)
+	}
 }
 
 // acquireIdentityLock checks and acquires the identity lock for worker roles.
