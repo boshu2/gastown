@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// cycleCrewSession switches to the next or previous crew session in the same rig.
+// cycleCrewSession switches to the next or previous crew session across ALL rigs.
 // direction: 1 for next, -1 for previous
 func cycleCrewSession(direction int) error {
 	// Get current session (uses existing function from handoff.go)
@@ -20,20 +20,20 @@ func cycleCrewSession(direction int) error {
 		return fmt.Errorf("not in a tmux session")
 	}
 
-	// Parse rig name from current session
-	rigName, _, ok := parseCrewSessionName(currentSession)
+	// Verify we're in a crew session
+	_, _, ok := parseCrewSessionName(currentSession)
 	if !ok {
 		return fmt.Errorf("not in a crew session (expected gt-<rig>-crew-<name>)")
 	}
 
-	// Find all crew sessions for this rig
-	sessions, err := findRigCrewSessions(rigName)
+	// Find all crew sessions across all rigs
+	sessions, err := findAllCrewSessions()
 	if err != nil {
 		return fmt.Errorf("listing sessions: %w", err)
 	}
 
 	if len(sessions) == 0 {
-		return fmt.Errorf("no crew sessions found for rig %s", rigName)
+		return fmt.Errorf("no crew sessions found")
 	}
 
 	// Sort for consistent ordering

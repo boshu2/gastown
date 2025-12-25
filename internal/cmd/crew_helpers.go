@@ -294,3 +294,28 @@ func findRigCrewSessions(rigName string) ([]string, error) {
 	// (alphabetical by session name means alphabetical by crew name)
 	return sessions, nil
 }
+
+// findAllCrewSessions returns all crew sessions across all rigs, sorted alphabetically.
+// Uses tmux list-sessions to find sessions matching gt-*-crew-* pattern.
+func findAllCrewSessions() ([]string, error) {
+	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}")
+	out, err := cmd.Output()
+	if err != nil {
+		// No tmux server or no sessions
+		return nil, nil
+	}
+
+	var sessions []string
+
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		// Match gt-<rig>-crew-<name> pattern
+		if strings.HasPrefix(line, "gt-") && strings.Contains(line, "-crew-") {
+			sessions = append(sessions, line)
+		}
+	}
+
+	return sessions, nil
+}
