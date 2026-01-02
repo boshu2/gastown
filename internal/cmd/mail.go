@@ -55,6 +55,9 @@ var (
 
 	// Announces flags
 	mailAnnouncesJSON bool
+
+	// Clear flags
+	mailClearAll bool
 )
 
 var mailCmd = &cobra.Command{
@@ -437,6 +440,9 @@ func init() {
 
 	// Announces flags
 	mailAnnouncesCmd.Flags().BoolVar(&mailAnnouncesJSON, "json", false, "Output as JSON")
+
+	// Clear flags
+	mailClearCmd.Flags().BoolVar(&mailClearAll, "all", false, "Clear all messages (default behavior)")
 
 	// Add subcommands
 	mailCmd.AddCommand(mailSendCmd)
