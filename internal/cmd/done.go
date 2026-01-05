@@ -445,7 +445,7 @@ func getDispatcherFromBead(cwd, issueID string) string {
 		return ""
 	}
 
-	bd := beads.New(cwd)
+	bd := beads.New(beads.ResolveBeadsDir(cwd))
 	issue, err := bd.Show(issueID)
 	if err != nil {
 		return ""
