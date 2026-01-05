@@ -235,6 +235,22 @@ gt <role> attach                  # Jump into any agent session
                                   # e.g., gt mayor attach, gt witness attach
 ```
 
+### Configuration
+
+```bash
+gt config agent list [--json]     # List all agents (built-in + custom)
+gt config agent get <name>        # Show agent configuration
+gt config agent set <name> <cmd>  # Create or update custom agent
+gt config agent remove <name>     # Remove custom agent (built-ins protected)
+gt config default-agent [name]    # Get or set town default agent
+```
+
+**Example**: Use a cheaper model for most work:
+```bash
+gt config agent set claude-glm "claude-glm --model glm-4"
+gt config default-agent claude-glm
+```
+
 Most other work happens through agents - just ask them.
 
 ### For Agents

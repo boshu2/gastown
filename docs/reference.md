@@ -215,6 +215,28 @@ gt doctor                    # Health check
 gt doctor --fix              # Auto-repair
 ```
 
+### Configuration
+
+```bash
+# Agent management
+gt config agent list [--json]     # List all agents (built-in + custom)
+gt config agent get <name>        # Show agent configuration
+gt config agent set <name> <cmd>  # Create or update custom agent
+gt config agent remove <name>     # Remove custom agent (built-ins protected)
+
+# Default agent
+gt config default-agent [name]    # Get or set town default agent
+```
+
+**Built-in agents**: `claude`, `gemini`, `codex`
+
+**Custom agents**: Define per-town in `mayor/town.json`:
+```bash
+gt config agent set claude-glm "claude-glm --model glm-4"
+gt config agent set claude "claude-opus"  # Override built-in
+gt config default-agent claude-glm       # Set default
+```
+
 ### Rig Management
 
 ```bash
