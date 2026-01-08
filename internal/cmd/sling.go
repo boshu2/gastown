@@ -1172,6 +1172,38 @@ func slingGenerateShortID() string {
 	return strings.ToLower(base32.StdEncoding.EncodeToString(b)[:5])
 }
 
+// formatTrackBeadID formats a bead ID for cross-rig tracking in convoy dependencies.
+// HQ beads (hq-*) are returned unchanged since they're in the town beads db.
+// Cross-rig beads are formatted as "external:prefix:full-id" where prefix is the
+// first two hyphen-separated segments (e.g., "gt-mol" from "gt-mol-abc123").
+// This format allows convoy consumers to identify external references and extract
+// the original bead ID when needed.
+func formatTrackBeadID(beadID string) string {
+	// Edge cases: empty or no hyphens
+	if beadID == "" {
+		return beadID
+	}
+	if !strings.Contains(beadID, "-") {
+		return beadID
+	}
+
+	// HQ beads stay in town beads, no external prefix needed
+	if strings.HasPrefix(beadID, "hq-") {
+		return beadID
+	}
+
+	// Extract first two segments as prefix (e.g., "gt-mol" from "gt-mol-abc123")
+	parts := strings.SplitN(beadID, "-", 3)
+	var prefix string
+	if len(parts) >= 2 {
+		prefix = parts[0] + "-" + parts[1]
+	} else {
+		prefix = beadID
+	}
+
+	return fmt.Sprintf("external:%s:%s", prefix, beadID)
+}
+
 // isTrackedByConvoy checks if an issue is already being tracked by a convoy.
 // Returns the convoy ID if tracked, empty string otherwise.
 func isTrackedByConvoy(beadID string) string {
