@@ -1401,3 +1401,32 @@ func runBatchSling(beadIDs []string, rigName string, townBeadsDir string) error 
 
 	return nil
 }
+
+// formatTrackBeadID formats a bead ID for tracking in convoys.
+// HQ beads (hq-*) remain unchanged since they're in town beads.
+// Cross-rig beads get external:<rig-prefix>:<full-id> format for cross-prefix tracking.
+func formatTrackBeadID(beadID string) string {
+	if beadID == "" {
+		return ""
+	}
+
+	// HQ beads stay in town beads - no external prefix needed
+	if strings.HasPrefix(beadID, "hq-") {
+		return beadID
+	}
+
+	// Find the rig prefix (first two segments: prefix-type)
+	// e.g., "gt-mol-abc123" -> "gt-mol"
+	// e.g., "beads-task-xyz" -> "beads-task"
+	parts := strings.SplitN(beadID, "-", 3)
+	if len(parts) < 2 {
+		// Single segment - can't determine rig, return as-is
+		return beadID
+	}
+
+	// Build rig prefix from first two parts
+	rigPrefix := parts[0] + "-" + parts[1]
+
+	// Format as external reference for cross-rig tracking
+	return fmt.Sprintf("external:%s:%s", rigPrefix, beadID)
+}
