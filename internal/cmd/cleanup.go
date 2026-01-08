@@ -12,7 +12,6 @@ import (
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/polecat"
 	"github.com/steveyegge/gastown/internal/rig"
-	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/workspace"
@@ -192,7 +191,7 @@ func cleanupDonePolecats(rigs []*rig.Rig, dryRun bool) (int, error) {
 			fmt.Printf("  Nuking %s/%s...", r.Name, p.Name)
 
 			// Kill session if running
-			sessMgr := session.NewManager(t, r)
+			sessMgr := polecat.NewSessionManager(t, r)
 			running, _ := sessMgr.IsRunning(p.Name)
 			if running {
 				_ = sessMgr.Stop(p.Name, true) // Force kill
