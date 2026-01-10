@@ -19,6 +19,7 @@ var (
 	crewAccount       string
 	crewAgentOverride string
 	crewAll           bool
+	crewListAll       bool
 	crewDryRun        bool
 )
 
@@ -77,7 +78,8 @@ Shows git branch, session state, and git status for each workspace.
 
 Examples:
   gt crew list                    # List in current rig
-  gt crew list --rig greenplace      # List in specific rig
+  gt crew list --rig greenplace   # List in specific rig
+  gt crew list --all              # List in all rigs
   gt crew list --json             # JSON output`,
 	RunE: runCrewList,
 }
@@ -323,6 +325,7 @@ func init() {
 	crewAddCmd.Flags().BoolVar(&crewBranch, "branch", false, "Create a feature branch (crew/<name>)")
 
 	crewListCmd.Flags().StringVar(&crewRig, "rig", "", "Filter by rig name")
+	crewListCmd.Flags().BoolVar(&crewListAll, "all", false, "List crew workspaces in all rigs")
 	crewListCmd.Flags().BoolVar(&crewJSON, "json", false, "Output as JSON")
 
 	crewAtCmd.Flags().StringVar(&crewRig, "rig", "", "Rig to use")

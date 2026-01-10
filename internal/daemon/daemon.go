@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/deacon"
+	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/feed"
 	"github.com/steveyegge/gastown/internal/polecat"
 	"github.com/steveyegge/gastown/internal/refinery"
@@ -41,7 +43,23 @@ type Daemon struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	curator *feed.Curator
+
+	// Mass death detection: track recent session deaths
+	deathsMu     sync.Mutex
+	recentDeaths []sessionDeath
 }
+
+// sessionDeath records a detected session death for mass death analysis.
+type sessionDeath struct {
+	sessionName string
+	timestamp   time.Time
+}
+
+// Mass death detection parameters
+const (
+	massDeathWindow    = 30 * time.Second // Time window to detect mass death
+	massDeathThreshold = 3                // Number of deaths to trigger alert
+)
 
 // New creates a new daemon instance.
 func New(config *Config) (*Daemon, error) {
@@ -169,40 +187,40 @@ const recoveryHeartbeatInterval = 3 * time.Minute
 func (d *Daemon) heartbeat(state *State) {
 	d.logger.Println("Heartbeat starting (recovery-focused)")
 
-	// 1. Poke Boot (the Deacon's watchdog) instead of Deacon directly
-	// Boot handles the "when to wake Deacon" decision via triage logic
+	// 1. Ensure Deacon is running (restart if dead)
+	d.ensureDeaconRunning()
+
+	// 2. Poke Boot for intelligent triage (stuck/nudge/interrupt)
+	// Boot handles nuanced "is Deacon responsive" decisions
 	d.ensureBootRunning()
 
-	// 1b. Direct Deacon heartbeat check (belt-and-suspenders)
+	// 3. Direct Deacon heartbeat check (belt-and-suspenders)
 	// Boot may not detect all stuck states; this provides a fallback
 	d.checkDeaconHeartbeat()
 
-	// 2. Ensure Witnesses are running for all rigs (restart if dead)
+	// 4. Ensure Witnesses are running for all rigs (restart if dead)
 	d.ensureWitnessesRunning()
 
-	// 2b. Ensure Refineries are running for all rigs (restart if dead)
+	// 5. Ensure Refineries are running for all rigs (restart if dead)
 	d.ensureRefineriesRunning()
 
-	// 3. Trigger pending polecat spawns (bootstrap mode - ZFC violation acceptable)
+	// 6. Trigger pending polecat spawns (bootstrap mode - ZFC violation acceptable)
 	// This ensures polecats get nudged even when Deacon isn't in a patrol cycle.
-	// Uses regex-based WaitForClaudeReady, which is acceptable for daemon bootstrap.
+	// Uses regex-based WaitForRuntimeReady, which is acceptable for daemon bootstrap.
 	d.triggerPendingSpawns()
 
-	// 4. Process lifecycle requests
+	// 7. Process lifecycle requests
 	d.processLifecycleRequests()
 
-	// 5. Stale agent check REMOVED (gt-zecmc)
-	// Was: d.checkStaleAgents() - marked agents "dead" based on bead update time.
-	// This violated "discover, don't track" - agent liveness is observable from tmux.
-	// The daemon now checks tmux directly in ensureXxxRunning() functions.
+	// 8. (Removed) Stale agent check - violated "discover, don't track"
 
-	// 6. Check for GUPP violations (agents with work-on-hook not progressing)
+	// 9. Check for GUPP violations (agents with work-on-hook not progressing)
 	d.checkGUPPViolations()
 
-	// 7. Check for orphaned work (assigned to dead agents)
+	// 10. Check for orphaned work (assigned to dead agents)
 	d.checkOrphanedWork()
 
-	// 8. Check polecat session health (proactive crash detection)
+	// 11. Check polecat session health (proactive crash detection)
 	// This validates tmux sessions are still alive for polecats with work-on-hook
 	d.checkPolecatSessionHealth()
 
@@ -291,51 +309,20 @@ func (d *Daemon) runDegradedBootTriage(b *boot.Boot) {
 }
 
 // ensureDeaconRunning ensures the Deacon is running.
-// Discover, don't track: checks tmux directly instead of bead state (gt-zecmc).
-// The Deacon is the system's heartbeat - it must always be running.
+// Uses deacon.Manager for consistent startup behavior (WaitForShellReady, GUPP, etc.).
 func (d *Daemon) ensureDeaconRunning() {
-	deaconSession := d.getDeaconSessionName()
+	mgr := deacon.NewManager(d.config.TownRoot)
 
-	// Check if tmux session exists and Claude is running (observable reality)
-	hasSession, sessionErr := d.tmux.HasSession(deaconSession)
-	if sessionErr == nil && hasSession {
-		if d.tmux.IsClaudeRunning(deaconSession) {
+	if err := mgr.Start(""); err != nil {
+		if err == deacon.ErrAlreadyRunning {
 			// Deacon is running - nothing to do
 			return
 		}
-		// Session exists but Claude not running - zombie session, kill it
-		d.logger.Println("Deacon session exists but Claude not running, killing zombie session...")
-		if err := d.tmux.KillSession(deaconSession); err != nil {
-			d.logger.Printf("Warning: failed to kill zombie Deacon session: %v", err)
-		}
-		// Fall through to restart
-	}
-
-	// Deacon not running - start it
-	d.logger.Println("Deacon not running, starting...")
-
-	// Create session in deacon directory (ensures correct CLAUDE.md is loaded)
-	// Use EnsureSessionFresh to handle zombie sessions that exist but have dead Claude
-	deaconDir := filepath.Join(d.config.TownRoot, "deacon")
-	sessionName := d.getDeaconSessionName()
-	if err := d.tmux.EnsureSessionFresh(sessionName, deaconDir); err != nil {
-		d.logger.Printf("Error creating Deacon session: %v", err)
+		d.logger.Printf("Error starting Deacon: %v", err)
 		return
 	}
 
-	// Set environment (non-fatal: session works without these)
-	_ = d.tmux.SetEnvironment(sessionName, "GT_ROLE", "deacon")
-	_ = d.tmux.SetEnvironment(sessionName, "BD_ACTOR", "deacon")
-
-	// Launch Claude directly (no shell respawn loop)
-	// The daemon will detect if Claude exits and restart it on next heartbeat
-	// Export GT_ROLE and BD_ACTOR so Claude inherits them (tmux SetEnvironment doesn't export to processes)
-	if err := d.tmux.SendKeys(sessionName, config.BuildAgentStartupCommand("deacon", "deacon", "", "")); err != nil {
-		d.logger.Printf("Error launching Claude in Deacon session: %v", err)
-		return
-	}
-
-	d.logger.Println("Deacon session started successfully")
+	d.logger.Println("Deacon started successfully")
 }
 
 // checkDeaconHeartbeat checks if the Deacon is making progress.
@@ -368,7 +355,8 @@ func (d *Daemon) checkDeaconHeartbeat() {
 	}
 
 	if !hasSession {
-		// Session doesn't exist - ensureBootRunning will handle restart
+		// Session doesn't exist - ensureDeaconRunning already ran earlier
+		// in heartbeat, so Deacon should be starting
 		return
 	}
 
@@ -379,7 +367,7 @@ func (d *Daemon) checkDeaconHeartbeat() {
 		if err := d.tmux.KillSession(sessionName); err != nil {
 			d.logger.Printf("Error killing stuck Deacon: %v", err)
 		}
-		// ensureDeaconRunning will be called next heartbeat to restart
+		// ensureDeaconRunning will restart on next heartbeat
 	} else {
 		// Stuck but not critically - nudge to wake up
 		d.logger.Printf("Deacon stuck for %s - nudging session", age.Round(time.Minute))
@@ -528,7 +516,7 @@ func (d *Daemon) isRigOperational(rigName string) (bool, string) {
 }
 
 // triggerPendingSpawns polls pending polecat spawns and triggers those that are ready.
-// This is bootstrap mode - uses regex-based WaitForClaudeReady which is acceptable
+// This is bootstrap mode - uses regex-based WaitForRuntimeReady which is acceptable
 // for daemon operations when no AI agent is guaranteed to be running.
 // The timeout is short (2s) to avoid blocking the heartbeat.
 func (d *Daemon) triggerPendingSpawns() {
@@ -547,7 +535,7 @@ func (d *Daemon) triggerPendingSpawns() {
 
 	d.logger.Printf("Found %d pending spawn(s), attempting to trigger...", len(pending))
 
-	// Trigger pending spawns (uses WaitForClaudeReady with short timeout)
+	// Trigger pending spawns (uses WaitForRuntimeReady with short timeout)
 	results, err := polecat.TriggerPendingSpawns(d.config.TownRoot, triggerTimeout)
 	if err != nil {
 		d.logger.Printf("Error triggering spawns: %v", err)
@@ -765,6 +753,9 @@ func (d *Daemon) checkPolecatHealth(rigName, polecatName string) {
 	d.logger.Printf("CRASH DETECTED: polecat %s/%s has hook_bead=%s but session %s is dead",
 		rigName, polecatName, info.HookBead, sessionName)
 
+	// Track this death for mass death detection
+	d.recordSessionDeath(sessionName)
+
 	// Auto-restart the polecat
 	if err := d.restartPolecatSession(rigName, polecatName, sessionName); err != nil {
 		d.logger.Printf("Error restarting polecat %s/%s: %v", rigName, polecatName, err)
@@ -775,6 +766,56 @@ func (d *Daemon) checkPolecatHealth(rigName, polecatName string) {
 	}
 }
 
+// recordSessionDeath records a session death and checks for mass death pattern.
+func (d *Daemon) recordSessionDeath(sessionName string) {
+	d.deathsMu.Lock()
+	defer d.deathsMu.Unlock()
+
+	now := time.Now()
+
+	// Add this death
+	d.recentDeaths = append(d.recentDeaths, sessionDeath{
+		sessionName: sessionName,
+		timestamp:   now,
+	})
+
+	// Prune deaths outside the window
+	cutoff := now.Add(-massDeathWindow)
+	var recent []sessionDeath
+	for _, death := range d.recentDeaths {
+		if death.timestamp.After(cutoff) {
+			recent = append(recent, death)
+		}
+	}
+	d.recentDeaths = recent
+
+	// Check for mass death
+	if len(d.recentDeaths) >= massDeathThreshold {
+		d.emitMassDeathEvent()
+	}
+}
+
+// emitMassDeathEvent logs a mass death event when multiple sessions die in a short window.
+func (d *Daemon) emitMassDeathEvent() {
+	// Collect session names
+	var sessions []string
+	for _, death := range d.recentDeaths {
+		sessions = append(sessions, death.sessionName)
+	}
+
+	count := len(sessions)
+	window := massDeathWindow.String()
+
+	d.logger.Printf("MASS DEATH DETECTED: %d sessions died in %s: %v", count, window, sessions)
+
+	// Emit feed event
+	_ = events.LogFeed(events.TypeMassDeath, "daemon",
+		events.MassDeathPayload(count, window, sessions, ""))
+
+	// Clear the deaths to avoid repeated alerts
+	d.recentDeaths = nil
+}
+
 // restartPolecatSession restarts a crashed polecat session.
 func (d *Daemon) restartPolecatSession(rigName, polecatName, sessionName string) error {
 	// Check rig operational state before auto-restarting
@@ -782,8 +823,14 @@ func (d *Daemon) restartPolecatSession(rigName, polecatName, sessionName string)
 		return fmt.Errorf("cannot restart polecat: %s", reason)
 	}
 
-	// Determine working directory
-	workDir := filepath.Join(d.config.TownRoot, rigName, "polecats", polecatName)
+	// Determine working directory (handle both new and old structures)
+	// New structure: polecats/<name>/<rigname>/
+	// Old structure: polecats/<name>/
+	workDir := filepath.Join(d.config.TownRoot, rigName, "polecats", polecatName, rigName)
+	if _, err := os.Stat(workDir); os.IsNotExist(err) {
+		// Fall back to old structure
+		workDir = filepath.Join(d.config.TownRoot, rigName, "polecats", polecatName)
+	}
 
 	// Verify the worktree exists
 	if _, err := os.Stat(workDir); os.IsNotExist(err) {

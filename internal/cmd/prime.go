@@ -21,7 +21,9 @@ import (
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/lock"
 	"github.com/steveyegge/gastown/internal/rig"
+	"github.com/steveyegge/gastown/internal/runtime"
 	"github.com/steveyegge/gastown/internal/session"
+	"github.com/steveyegge/gastown/internal/state"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/templates"
 	"github.com/steveyegge/gastown/internal/workspace"
@@ -81,12 +83,15 @@ func init() {
 type RoleContext = RoleInfo
 
 func runPrime(cmd *cobra.Command, args []string) error {
+	if !state.IsEnabled() {
+		return nil
+	}
+
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
 
-	// Find town root
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding workspace: %w", err)
@@ -1499,22 +1504,17 @@ func outputSessionMetadata(ctx RoleContext) {
 // resolveSessionIDForPrime finds the session ID from available sources.
 // Priority: GT_SESSION_ID env, CLAUDE_SESSION_ID env, persisted file, fallback.
 func resolveSessionIDForPrime(actor string) string {
-	// 1. GT_SESSION_ID (new canonical)
-	if id := os.Getenv("GT_SESSION_ID"); id != "" {
+	// 1. Try runtime's session ID lookup (checks GT_SESSION_ID_ENV, then CLAUDE_SESSION_ID)
+	if id := runtime.SessionIDFromEnv(); id != "" {
 		return id
 	}
 
-	// 2. CLAUDE_SESSION_ID (legacy/Claude Code)
-	if id := os.Getenv("CLAUDE_SESSION_ID"); id != "" {
-		return id
-	}
-
-	// 3. Persisted session file (from gt prime --hook)
+	// 2. Persisted session file (from gt prime --hook)
 	if id := ReadPersistedSessionID(); id != "" {
 		return id
 	}
 
-	// 4. Fallback to generated identifier
+	// 3. Fallback to generated identifier
 	return fmt.Sprintf("%s-%d", actor, os.Getpid())
 }
 

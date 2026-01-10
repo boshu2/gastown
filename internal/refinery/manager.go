@@ -12,13 +12,13 @@ import (
 	"time"
 
 	"github.com/steveyegge/gastown/internal/beads"
-	"github.com/steveyegge/gastown/internal/claude"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/mail"
 	"github.com/steveyegge/gastown/internal/mrqueue"
 	"github.com/steveyegge/gastown/internal/rig"
+	"github.com/steveyegge/gastown/internal/runtime"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/util"
@@ -162,23 +162,30 @@ func (m *Manager) Start(foreground bool) error {
 	// Working directory is the refinery worktree (shares .git with mayor/polecats)
 	refineryRigDir := filepath.Join(m.rig.Path, "refinery", "rig")
 	if _, err := os.Stat(refineryRigDir); os.IsNotExist(err) {
-		// Fall back to rig path if refinery/rig doesn't exist
-		refineryRigDir = m.workDir
+		// Fall back to mayor/rig (legacy architecture) - ensures we use project git, not town git.
+		// Using rig.Path directly would find town's .git with rig-named remotes instead of "origin".
+		refineryRigDir = filepath.Join(m.rig.Path, "mayor", "rig")
 	}
 
-	// Ensure Claude settings exist in refinery/ (not refinery/rig/) so we don't
-	// write into the source repo. Claude walks up the tree to find settings.
+	// Ensure runtime settings exist in refinery/ (not refinery/rig/) so we don't
+	// write into the source repo. Runtime walks up the tree to find settings.
 	refineryParentDir := filepath.Join(m.rig.Path, "refinery")
-	if err := claude.EnsureSettingsForRole(refineryParentDir, "refinery"); err != nil {
-		return fmt.Errorf("ensuring Claude settings: %w", err)
+	runtimeConfig := config.LoadRuntimeConfig(m.rig.Path)
+	if err := runtime.EnsureSettingsForRole(refineryParentDir, "refinery", runtimeConfig); err != nil {
+		return fmt.Errorf("ensuring runtime settings: %w", err)
 	}
 
-	if err := t.NewSession(sessionID, refineryRigDir); err != nil {
+	// Build startup command first
+	bdActor := fmt.Sprintf("%s/refinery", m.rig.Name)
+	command := config.BuildAgentStartupCommand("refinery", bdActor, m.rig.Path, "")
+
+	// Create session with command directly to avoid send-keys race condition.
+	// See: https://github.com/anthropics/gastown/issues/280
+	if err := t.NewSessionWithCommand(sessionID, refineryRigDir, command); err != nil {
 		return fmt.Errorf("creating tmux session: %w", err)
 	}
 
 	// Set environment variables (non-fatal: session works without these)
-	bdActor := fmt.Sprintf("%s/refinery", m.rig.Name)
 	_ = t.SetEnvironment(sessionID, "GT_RIG", m.rig.Name)
 	_ = t.SetEnvironment(sessionID, "GT_REFINERY", "1")
 	_ = t.SetEnvironment(sessionID, "GT_ROLE", "refinery")
@@ -205,32 +212,18 @@ func (m *Manager) Start(foreground bool) error {
 		return fmt.Errorf("saving state: %w", err)
 	}
 
-	// Start Claude agent with full permissions (like polecats)
-	// NOTE: No gt prime injection needed - SessionStart hook handles it automatically
-	// Restarts are handled by daemon via LIFECYCLE mail, not shell loops
-	// Export GT_ROLE and BD_ACTOR in the command since tmux SetEnvironment only affects new panes
-	command := config.BuildAgentStartupCommand("refinery", bdActor, m.rig.Path, "")
-	// Wait for shell to be ready before sending keys (prevents "can't find pane" under load)
-	if err := t.WaitForShellReady(sessionID, 5*time.Second); err != nil {
-		_ = t.KillSession(sessionID)
-		return fmt.Errorf("waiting for shell: %w", err)
-	}
-	if err := t.SendKeys(sessionID, command); err != nil {
-		// Clean up the session on failure (best-effort cleanup)
-		_ = t.KillSession(sessionID)
-		return fmt.Errorf("starting Claude agent: %w", err)
-	}
-
 	// Wait for Claude to start and show its prompt (non-fatal)
-	// WaitForClaudeReady waits for "> " prompt, more reliable than just checking node is running
-	if err := t.WaitForClaudeReady(sessionID, constants.ClaudeStartTimeout); err != nil {
+	// WaitForRuntimeReady waits for the runtime to be ready
+	if err := t.WaitForRuntimeReady(sessionID, runtimeConfig, constants.ClaudeStartTimeout); err != nil {
 		// Non-fatal - try to continue anyway
 	}
 
 	// Accept bypass permissions warning dialog if it appears.
 	_ = t.AcceptBypassPermissionsWarning(sessionID)
 
-	time.Sleep(constants.ShutdownNotifyDelay)
+	// Wait for runtime to be fully ready
+	runtime.SleepForReadyDelay(runtimeConfig)
+	_ = runtime.RunStartupFallback(t, sessionID, "refinery", runtimeConfig)
 
 	// Inject startup nudge for predecessor discovery via /resume
 	address := fmt.Sprintf("%s/refinery", m.rig.Name)

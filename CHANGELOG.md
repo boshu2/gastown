@@ -7,9 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-01-09
+
+Worker safety release - prevents accidental termination of active agents.
+
+> **Note**: The Deacon safety improvements are believed to be correct but have not
+> yet been extensively tested in production. We recommend running with
+> `gt deacon pause` initially and monitoring behavior before enabling full patrol.
+> Please report any issues. A 0.3.0 release will follow once these changes are
+> battle-tested.
+
+### Critical Safety Improvements
+
+- **Kill authority removed from Deacon** - Deacon patrol now only detects zombies via `--dry-run`, never kills directly. Death warrants are filed for Boot to handle interrogation/execution. This prevents destruction of worker context, mid-task progress, and unsaved state (#gt-vhaej)
+- **Bulletproof pause mechanism** - Multi-layer pause for Deacon with file-based state, `gt deacon pause/resume` commands, and guards in `gt prime` and heartbeat (#265)
+- **Doctor warns instead of killing** - `gt doctor` now warns about stale town-root settings rather than killing sessions (#243)
+- **Orphan process check informational** - Doctor's orphan process detection is now informational only, not actionable (#272)
+
 ### Added
-- **New agent presets** - Added Cursor, Auggie (Augment Code), and Sourcegraph AMP as built-in agent presets
-- **Centralized agent list** - Agent preset configuration moved to `config.go` for easier maintenance
+
+- **`gt account switch` command** - Switch between Claude Code accounts with `gt account switch <handle>`. Manages `~/.claude` symlinks and updates default account
+- **`gt crew list --all`** - Show all crew members across all rigs (#276)
+- **Rig-level custom agent support** - Configure different agents per-rig (#12)
+- **Rig identity beads check** - Doctor validates rig identity beads exist
+- **GT_ROOT env var** - Set for all agent sessions for consistent environment
+- **New agent presets** - Added Cursor, Auggie (Augment Code), and Sourcegraph AMP as built-in agent presets (#247)
+- **Context Management docs** - Added to Witness template for better context handling (gt-jjama)
+
+### Fixed
+
+- **`gt prime --hook` recognized** - Doctor now recognizes `gt prime --hook` as valid session hook config (#14)
+- **Integration test reliability** - Improved test stability (#13)
+- **IsClaudeRunning detection** - Now detects 'claude' and version patterns correctly (#273)
+- **Deacon heartbeat restored** - `ensureDeaconRunning` restored to heartbeat using Manager pattern (#271)
+- **Deacon session names** - Correct session name references in formulas (#270)
+- **Hidden directory scanning** - Ignore `.claude` and other dot directories when enumerating polecats (#258, #279)
+- **SetupRedirect tracked beads** - Works correctly with tracked beads architecture where canonical location is `mayor/rig/.beads`
+- **Tmux shell ready** - Wait for shell ready before sending keys (#264)
+- **Gastown prefix derivation** - Correctly derive `gt-` prefix for gastown compound words (gt-m46bb)
+- **Custom beads types** - Register custom beads types during install (#250)
+
+### Changed
+
+- **Refinery Manager pattern** - Replaced `ensureRefinerySession` with `refinery.Manager.Start()` for consistency
+
+### Removed
+
+- **Unused formula JSON** - Removed unused JSON formula file (cleanup)
+
+### Contributors
+
+Thanks to all contributors for this release:
+- @julianknutsen - Doctor fixes (#14, #271, #272, #273), formula fixes (#270), GT_ROOT env (#268)
+- @joshuavial - Hidden directory scanning (#258, #279), crew list --all (#276)
 
 ## [0.2.2] - 2026-01-07
 

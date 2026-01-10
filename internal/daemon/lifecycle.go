@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -427,6 +428,12 @@ func (d *Daemon) getWorkDir(config *beads.RoleConfig, parsed *ParsedIdentity) st
 	case "crew":
 		return filepath.Join(d.config.TownRoot, parsed.RigName, "crew", parsed.AgentName)
 	case "polecat":
+		// New structure: polecats/<name>/<rigname>/ (for LLM ergonomics)
+		// Old structure: polecats/<name>/ (for backward compat)
+		newPath := filepath.Join(d.config.TownRoot, parsed.RigName, "polecats", parsed.AgentName, parsed.RigName)
+		if _, err := os.Stat(newPath); err == nil {
+			return newPath
+		}
 		return filepath.Join(d.config.TownRoot, parsed.RigName, "polecats", parsed.AgentName)
 	default:
 		return ""
@@ -466,6 +473,10 @@ func (d *Daemon) getStartCommand(roleConfig *beads.RoleConfig, parsed *ParsedIde
 
 	// Default command for all agents - use runtime config
 	defaultCmd := "exec " + config.GetRuntimeCommand(rigPath)
+	runtimeConfig := config.LoadRuntimeConfig(rigPath)
+	if runtimeConfig.Session != nil && runtimeConfig.Session.SessionIDEnv != "" {
+		defaultCmd = config.PrependEnv(defaultCmd, map[string]string{"GT_SESSION_ID_ENV": runtimeConfig.Session.SessionIDEnv})
+	}
 
 	// Polecats need environment variables set in the command
 	if parsed.RoleType == "polecat" {

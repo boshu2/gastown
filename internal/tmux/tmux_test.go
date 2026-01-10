@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -417,11 +418,45 @@ func TestIsClaudeRunning(t *testing.T) {
 	}
 	defer func() { _ = tm.KillSession(sessionName) }()
 
-	// IsClaudeRunning should be false (shell is running, not node)
+	// IsClaudeRunning should be false (shell is running, not node/claude)
 	cmd, _ := tm.GetPaneCommand(sessionName)
-	wantRunning := cmd == "node"
+	wantRunning := cmd == "node" || cmd == "claude"
 
 	if got := tm.IsClaudeRunning(sessionName); got != wantRunning {
 		t.Errorf("IsClaudeRunning() = %v, want %v (pane cmd: %q)", got, wantRunning, cmd)
+	}
+}
+
+func TestIsClaudeRunning_VersionPattern(t *testing.T) {
+	// Test the version pattern regex matching directly
+	// Since we can't easily mock the pane command, test the pattern logic
+	tests := []struct {
+		cmd  string
+		want bool
+	}{
+		{"node", true},
+		{"claude", true},
+		{"2.0.76", true},
+		{"1.2.3", true},
+		{"10.20.30", true},
+		{"bash", false},
+		{"zsh", false},
+		{"", false},
+		{"v2.0.76", false}, // version with 'v' prefix shouldn't match
+		{"2.0", false},     // incomplete version
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			// Check if it matches node/claude directly
+			isKnownCmd := tt.cmd == "node" || tt.cmd == "claude"
+			// Check version pattern
+			matched, _ := regexp.MatchString(`^\d+\.\d+\.\d+`, tt.cmd)
+
+			got := isKnownCmd || matched
+			if got != tt.want {
+				t.Errorf("IsClaudeRunning logic for %q = %v, want %v", tt.cmd, got, tt.want)
+			}
+		})
 	}
 }

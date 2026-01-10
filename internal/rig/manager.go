@@ -13,6 +13,7 @@ import (
 
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/claude"
+	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/templates"
@@ -365,7 +366,7 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 					fmt.Printf("  Warning: Could not init bd database: %v (%s)\n", err, strings.TrimSpace(string(output)))
 				}
 				// Configure custom types for Gas Town (beads v0.46.0+)
-				configCmd := exec.Command("bd", "config", "set", "types.custom", "agent,role,rig,convoy,event")
+				configCmd := exec.Command("bd", "config", "set", "types.custom", constants.BeadsCustomTypes)
 				configCmd.Dir = mayorRigPath
 				_, _ = configCmd.CombinedOutput() // Ignore errors - older beads don't need this
 			}
@@ -405,6 +406,12 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 	if err := m.createRoleCLAUDEmd(refineryRigPath, "refinery", opts.Name, ""); err != nil {
 		return nil, fmt.Errorf("creating refinery CLAUDE.md: %w", err)
 	}
+	// Create refinery hooks for patrol triggering (at refinery/ level, not rig/)
+	refineryPath := filepath.Dir(refineryRigPath)
+	runtimeConfig := config.LoadRuntimeConfig(rigPath)
+	if err := m.createPatrolHooks(refineryPath, runtimeConfig); err != nil {
+		fmt.Printf("  Warning: Could not create refinery hooks: %v\n", err)
+	}
 
 	// Create empty crew directory with README (crew members added via gt crew add)
 	crewPath := filepath.Join(rigPath, "crew")
@@ -438,6 +445,10 @@ Use crew for your own workspace. Polecats are for batch work dispatch.
 	witnessPath := filepath.Join(rigPath, "witness")
 	if err := os.MkdirAll(witnessPath, 0755); err != nil {
 		return nil, fmt.Errorf("creating witness dir: %w", err)
+	}
+	// Create witness hooks for patrol triggering
+	if err := m.createPatrolHooks(witnessPath, runtimeConfig); err != nil {
+		fmt.Printf("  Warning: Could not create witness hooks: %v\n", err)
 	}
 
 	// Create polecats directory (empty)
@@ -590,7 +601,7 @@ func (m *Manager) initBeads(rigPath, prefix string) error {
 
 	// Configure custom types for Gas Town (agent, role, rig, convoy).
 	// These were extracted from beads core in v0.46.0 and now require explicit config.
-	configCmd := exec.Command("bd", "config", "set", "types.custom", "agent,role,rig,convoy,event")
+	configCmd := exec.Command("bd", "config", "set", "types.custom", constants.BeadsCustomTypes)
 	configCmd.Dir = rigPath
 	configCmd.Env = filteredEnv
 	// Ignore errors - older beads versions don't need this
@@ -613,6 +624,11 @@ func (m *Manager) initBeads(rigPath, prefix string) error {
 		// Non-fatal: role slot set will fail but agent beads still work
 		fmt.Printf("   ⚠ Could not add route to town beads: %v\n", err)
 	}
+
+	typesCmd := exec.Command("bd", "config", "set", "types.custom", constants.BeadsCustomTypes)
+	typesCmd.Dir = rigPath
+	typesCmd.Env = filteredEnv
+	_, _ = typesCmd.CombinedOutput()
 
 	return nil
 }
@@ -915,6 +931,65 @@ func (m *Manager) createRoleCLAUDEmd(workspacePath string, role string, rigName 
 
 	claudePath := filepath.Join(workspacePath, "CLAUDE.md")
 	return os.WriteFile(claudePath, []byte(content), 0644)
+}
+
+// createPatrolHooks creates .claude/settings.json with hooks for patrol roles.
+// These hooks trigger gt prime on session start and inject mail, enabling
+// autonomous patrol execution for Witness and Refinery roles.
+func (m *Manager) createPatrolHooks(workspacePath string, runtimeConfig *config.RuntimeConfig) error {
+	if runtimeConfig == nil || runtimeConfig.Hooks == nil || runtimeConfig.Hooks.Provider != "claude" {
+		return nil
+	}
+	if runtimeConfig.Hooks.Dir == "" || runtimeConfig.Hooks.SettingsFile == "" {
+		return nil
+	}
+
+	settingsDir := filepath.Join(workspacePath, runtimeConfig.Hooks.Dir)
+	if err := os.MkdirAll(settingsDir, 0755); err != nil {
+		return fmt.Errorf("creating settings dir: %w", err)
+	}
+
+	// Standard patrol hooks - same as deacon
+	hooksJSON := `{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gt prime && gt mail check --inject"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gt prime"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gt mail check --inject"
+          }
+        ]
+      }
+    ]
+  }
+}
+`
+	settingsPath := filepath.Join(settingsDir, runtimeConfig.Hooks.SettingsFile)
+	return os.WriteFile(settingsPath, []byte(hooksJSON), 0600)
 }
 
 // seedPatrolMolecules creates patrol molecule prototypes in the rig's beads database.

@@ -138,7 +138,8 @@ func (g *Git) CloneBare(url, dest string) error {
 	if err := cmd.Run(); err != nil {
 		return g.wrapError(err, stderr.String(), []string{"clone", "--bare", url})
 	}
-	return nil
+	// Configure refspec so worktrees can fetch and see origin/* refs
+	return configureRefspec(dest)
 }
 
 // configureHooksPath sets core.hooksPath to use the repo's .githooks directory
@@ -160,6 +161,21 @@ func configureHooksPath(repoPath string) error {
 	return nil
 }
 
+// configureRefspec sets remote.origin.fetch to the standard refspec for bare repos.
+// Bare clones don't have this set by default, which breaks worktrees that need to
+// fetch and see origin/* refs. Without this, `git fetch` only updates FETCH_HEAD
+// and origin/main never appears in refs/remotes/origin/main.
+// See: https://github.com/anthropics/gastown/issues/286
+func configureRefspec(repoPath string) error {
+	cmd := exec.Command("git", "-C", repoPath, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("configuring refspec: %s", strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
 // CloneBareWithReference clones a bare repository using a local repo as an object reference.
 func (g *Git) CloneBareWithReference(url, dest, reference string) error {
 	cmd := exec.Command("git", "clone", "--bare", "--reference-if-able", reference, url, dest)
@@ -168,7 +184,8 @@ func (g *Git) CloneBareWithReference(url, dest, reference string) error {
 	if err := cmd.Run(); err != nil {
 		return g.wrapError(err, stderr.String(), []string{"clone", "--bare", "--reference-if-able", url})
 	}
-	return nil
+	// Configure refspec so worktrees can fetch and see origin/* refs
+	return configureRefspec(dest)
 }
 
 // Checkout checks out the given ref.
