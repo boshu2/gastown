@@ -178,6 +178,33 @@ Can be run manually or by deacon patrol to ensure convoys close promptly.`,
 	RunE: runConvoyCheck,
 }
 
+var convoyDispatchCmd = &cobra.Command{
+	Use:   "dispatch <convoy-id> [--shard|--polecat] [--rig <rig>]",
+	Short: "Dispatch convoy work to shards or polecats",
+	Long: `Dispatch ready work in a convoy to execution (shards or polecats).
+
+This is the bridge between convoy tracking and execution. It finds ready
+issues in the convoy and dispatches them to either:
+  - Shards (K8s-native, scalable, via --shard)
+  - Polecats (local tmux, low latency, via --polecat)
+
+Default is polecat for simplicity; use --shard for heavy workloads.
+
+Examples:
+  gt convoy dispatch hq-cv-abc --rig greenplace          # Dispatch to polecats
+  gt convoy dispatch hq-cv-abc --shard --rig greenplace  # Dispatch to shards
+  gt convoy dispatch hq-cv-abc --shard --all             # Dispatch all ready issues`,
+	Args: cobra.ExactArgs(1),
+	RunE: runConvoyDispatch,
+}
+
+var (
+	convoyDispatchShard bool
+	convoyDispatchRig   string
+	convoyDispatchAll   bool
+	convoyDispatchModel string
+)
+
 var convoyStrandedCmd = &cobra.Command{
 	Use:   "stranded",
 	Short: "Find stranded convoys with ready work but no workers",
@@ -220,12 +247,20 @@ func init() {
 	// Stranded flags
 	convoyStrandedCmd.Flags().BoolVar(&convoyStrandedJSON, "json", false, "Output as JSON")
 
+	// Dispatch flags
+	convoyDispatchCmd.Flags().BoolVar(&convoyDispatchShard, "shard", false, "Dispatch to shards (K8s) instead of polecats")
+	convoyDispatchCmd.Flags().StringVar(&convoyDispatchRig, "rig", "", "Target rig for dispatch (required)")
+	convoyDispatchCmd.Flags().BoolVar(&convoyDispatchAll, "all", false, "Dispatch all ready issues (default: first ready issue)")
+	convoyDispatchCmd.Flags().StringVar(&convoyDispatchModel, "model", "sonnet", "Model for shard execution (haiku, sonnet, opus)")
+	convoyDispatchCmd.MarkFlagRequired("rig")
+
 	// Add subcommands
 	convoyCmd.AddCommand(convoyCreateCmd)
 	convoyCmd.AddCommand(convoyStatusCmd)
 	convoyCmd.AddCommand(convoyListCmd)
 	convoyCmd.AddCommand(convoyAddCmd)
 	convoyCmd.AddCommand(convoyCheckCmd)
+	convoyCmd.AddCommand(convoyDispatchCmd)
 	convoyCmd.AddCommand(convoyStrandedCmd)
 
 	rootCmd.AddCommand(convoyCmd)
@@ -485,6 +520,158 @@ func runConvoyStranded(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// runConvoyDispatch dispatches ready work in a convoy to shards or polecats.
+func runConvoyDispatch(cmd *cobra.Command, args []string) error {
+	convoyID := args[0]
+
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+
+	townBeads := filepath.Join(townRoot, ".beads")
+
+	// Verify convoy exists
+	showArgs := []string{"show", convoyID, "--json"}
+	showCmd := exec.Command("bd", showArgs...)
+	showCmd.Dir = townBeads
+	var stdout bytes.Buffer
+	showCmd.Stdout = &stdout
+
+	if err := showCmd.Run(); err != nil {
+		return fmt.Errorf("convoy '%s' not found", convoyID)
+	}
+
+	var convoys []struct {
+		ID     string `json:"id"`
+		Title  string `json:"title"`
+		Status string `json:"status"`
+		Type   string `json:"issue_type"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &convoys); err != nil {
+		return fmt.Errorf("parsing convoy data: %w", err)
+	}
+
+	if len(convoys) == 0 || convoys[0].Type != "convoy" {
+		return fmt.Errorf("'%s' is not a valid convoy", convoyID)
+	}
+
+	convoy := convoys[0]
+	if convoy.Status == "closed" {
+		return fmt.Errorf("convoy '%s' is closed", convoyID)
+	}
+
+	// Get ready issues from the convoy
+	tracked := getTrackedIssues(townBeads, convoyID)
+	blockedIssues := getBlockedIssueIDs()
+
+	var readyIssues []trackedIssueInfo
+	for _, t := range tracked {
+		if isReadyIssue(t, blockedIssues) {
+			readyIssues = append(readyIssues, t)
+		}
+	}
+
+	if len(readyIssues) == 0 {
+		fmt.Println("No ready issues to dispatch in this convoy.")
+		return nil
+	}
+
+	// Determine which issues to dispatch
+	toDispatch := readyIssues
+	if !convoyDispatchAll {
+		toDispatch = readyIssues[:1] // Just first one
+	}
+
+	// Dispatch to shards or polecats
+	dispatched := 0
+	for _, issue := range toDispatch {
+		if convoyDispatchShard {
+			// Create shard for this issue
+			shardID, err := dispatchToShard(townRoot, townBeads, issue.ID, issue.Title, convoyDispatchRig, convoyDispatchModel)
+			if err != nil {
+				style.PrintWarning("couldn't dispatch %s to shard: %v", issue.ID, err)
+				continue
+			}
+
+			// Track the shard in the convoy
+			depArgs := []string{"dep", "add", convoyID, shardID, "--type=tracks"}
+			depCmd := exec.Command("bd", depArgs...)
+			depCmd.Dir = townBeads
+			_ = depCmd.Run() // Best effort
+
+			fmt.Printf("  🔷 %s → shard %s\n", issue.ID, shardID)
+			dispatched++
+		} else {
+			// Sling to polecat via gt sling
+			slingArgs := []string{"sling", issue.ID, convoyDispatchRig}
+			slingCmd := exec.Command("gt", slingArgs...)
+			var slingStderr bytes.Buffer
+			slingCmd.Stderr = &slingStderr
+
+			if err := slingCmd.Run(); err != nil {
+				style.PrintWarning("couldn't dispatch %s to polecat: %v (%s)",
+					issue.ID, err, strings.TrimSpace(slingStderr.String()))
+				continue
+			}
+
+			fmt.Printf("  🐾 %s → polecat in %s\n", issue.ID, convoyDispatchRig)
+			dispatched++
+		}
+	}
+
+	// Summary
+	executorType := "polecats"
+	if convoyDispatchShard {
+		executorType = "shards"
+	}
+	fmt.Printf("\n%s Dispatched %d/%d issues to %s\n",
+		style.Bold.Render("✓"), dispatched, len(toDispatch), executorType)
+
+	return nil
+}
+
+// dispatchToShard creates a shard for an issue and returns the shard ID.
+func dispatchToShard(townRoot, townBeads, issueID, title, rig, model string) (string, error) {
+	// Generate shard ID
+	shardID := fmt.Sprintf("hq-sh-%s", generateShortID())
+
+	// Get issue details to form objective
+	objective := fmt.Sprintf("Complete issue %s: %s", issueID, title)
+
+	// Default namespace to rig name
+	namespace := rig
+
+	description := fmt.Sprintf("Shard for K8s execution\nRig: %s\nNamespace: %s\nModel: %s\nObjective: %s\nTracking: %s",
+		rig, namespace, model, objective, issueID)
+
+	createArgs := []string{
+		"create",
+		"--type=shard",
+		"--id=" + shardID,
+		"--title=" + truncateString(objective, 50),
+		"--description=" + description,
+		"--json",
+	}
+
+	createCmd := exec.Command("bd", createArgs...)
+	createCmd.Dir = townBeads
+	var stderr bytes.Buffer
+	createCmd.Stderr = &stderr
+
+	if err := createCmd.Run(); err != nil {
+		return "", fmt.Errorf("creating shard: %w (%s)", err, strings.TrimSpace(stderr.String()))
+	}
+
+	// Add dependency: shard tracks the original issue
+	depArgs := []string{"dep", "add", shardID, issueID, "--type=tracks"}
+	depCmd := exec.Command("bd", depArgs...)
+	depCmd.Dir = townBeads
+	_ = depCmd.Run() // Best effort
+
+	return shardID, nil
 }
 
 // findStrandedConvoys finds convoys with ready work but no workers.
@@ -809,35 +996,65 @@ func runConvoyStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(tracked) > 0 {
-		fmt.Printf("\n  %s\n", style.Bold.Render("Tracked Issues:"))
+		// Separate shards from other tracked items for display
+		var shards, issues []trackedIssueInfo
 		for _, t := range tracked {
-			// Status symbol: ✓ closed, ▶ in_progress/hooked, ○ other
-			status := "○"
-			switch t.Status {
-			case "closed":
-				status = "✓"
-			case "in_progress", "hooked":
-				status = "▶"
+			if t.IssueType == "shard" {
+				shards = append(shards, t)
+			} else {
+				issues = append(issues, t)
 			}
+		}
 
-			// Show assignee in brackets (extract short name from path like gastown/polecats/goose -> goose)
-			bracketContent := t.IssueType
-			if t.Assignee != "" {
-				parts := strings.Split(t.Assignee, "/")
-				bracketContent = parts[len(parts)-1] // Last part of path
-			} else if bracketContent == "" {
-				bracketContent = "unassigned"
-			}
-
-			line := fmt.Sprintf("    %s %s: %s [%s]", status, t.ID, t.Title, bracketContent)
-			if t.Worker != "" {
-				workerDisplay := "@" + t.Worker
-				if t.WorkerAge != "" {
-					workerDisplay += fmt.Sprintf(" (%s)", t.WorkerAge)
+		// Display tracked issues
+		if len(issues) > 0 {
+			fmt.Printf("\n  %s\n", style.Bold.Render("Tracked Issues:"))
+			for _, t := range issues {
+				// Status symbol: ✓ closed, ▶ in_progress/hooked, ○ other
+				status := "○"
+				switch t.Status {
+				case "closed":
+					status = "✓"
+				case "in_progress", "hooked":
+					status = "▶"
 				}
-				line += fmt.Sprintf("  %s", style.Dim.Render(workerDisplay))
+
+				// Show assignee in brackets (extract short name from path like gastown/polecats/goose -> goose)
+				bracketContent := t.IssueType
+				if t.Assignee != "" {
+					parts := strings.Split(t.Assignee, "/")
+					bracketContent = parts[len(parts)-1] // Last part of path
+				} else if bracketContent == "" {
+					bracketContent = "unassigned"
+				}
+
+				line := fmt.Sprintf("    %s %s: %s [%s]", status, t.ID, t.Title, bracketContent)
+				if t.Worker != "" {
+					workerDisplay := "@" + t.Worker
+					if t.WorkerAge != "" {
+						workerDisplay += fmt.Sprintf(" (%s)", t.WorkerAge)
+					}
+					line += fmt.Sprintf("  %s", style.Dim.Render(workerDisplay))
+				}
+				fmt.Println(line)
 			}
-			fmt.Println(line)
+		}
+
+		// Display tracked shards
+		if len(shards) > 0 {
+			fmt.Printf("\n  %s\n", style.Bold.Render("Shards (K8s):"))
+			for _, t := range shards {
+				// Status symbol for shards
+				status := "○"
+				switch t.Status {
+				case "closed":
+					status = "✓"
+				case "in_progress":
+					status = "▶"
+				}
+
+				fmt.Printf("    %s 🔷 %s: %s\n", status, t.ID, t.Title)
+			}
 		}
 	}
 
