@@ -16,7 +16,6 @@ import (
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/deps"
 	"github.com/steveyegge/gastown/internal/formula"
-	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/shell"
 	"github.com/steveyegge/gastown/internal/state"
 	"github.com/steveyegge/gastown/internal/style"
@@ -310,14 +309,23 @@ func runInstall(cmd *cobra.Command, args []string) error {
 }
 
 func createMayorCLAUDEmd(mayorDir, townRoot string) error {
-	townName, _ := workspace.GetTownName(townRoot)
-	return templates.CreateMayorCLAUDEmd(
-		mayorDir,
-		townRoot,
-		townName,
-		session.MayorSessionName(),
-		session.DeaconSessionName(),
-	)
+	// Create a minimal bootstrap pointer instead of full context.
+	// Full context is injected ephemerally by `gt prime` at session start.
+	// This keeps the on-disk file small (<30 lines) per priming architecture.
+	bootstrap := `# Mayor Context
+
+> **Recovery**: Run ` + "`gt prime`" + ` after compaction, clear, or new session
+
+Full context is injected by ` + "`gt prime`" + ` at session start.
+
+## Quick Reference
+
+- Check mail: ` + "`gt mail inbox`" + `
+- Check rigs: ` + "`gt rig list`" + `
+- Start patrol: ` + "`gt patrol start`" + `
+`
+	claudePath := filepath.Join(mayorDir, "CLAUDE.md")
+	return os.WriteFile(claudePath, []byte(bootstrap), 0644)
 }
 
 func writeJSON(path string, data interface{}) error {

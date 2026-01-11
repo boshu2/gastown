@@ -281,7 +281,7 @@ func (t *Tmux) SendKeysDelayedDebounced(session, keys string, preDelayMs, deboun
 
 // NudgeSession sends a message to a Claude Code session reliably.
 // This is the canonical way to send messages to Claude sessions.
-// Uses: literal mode + 500ms debounce + separate Enter.
+// Uses: literal mode + 500ms debounce + ESC (for vim mode) + separate Enter.
 // Verification is the Witness's job (AI), not this function.
 func (t *Tmux) NudgeSession(session, message string) error {
 	// 1. Send text in literal mode (handles special characters)
@@ -292,7 +292,12 @@ func (t *Tmux) NudgeSession(session, message string) error {
 	// 2. Wait 500ms for paste to complete (tested, required)
 	time.Sleep(500 * time.Millisecond)
 
-	// 3. Send Enter with retry (critical for message submission)
+	// 3. Send Escape to exit vim INSERT mode if enabled (harmless in normal mode)
+	// See: https://github.com/anthropics/gastown/issues/307
+	_, _ = t.run("send-keys", "-t", session, "Escape")
+	time.Sleep(100 * time.Millisecond)
+
+	// 4. Send Enter with retry (critical for message submission)
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -318,7 +323,12 @@ func (t *Tmux) NudgePane(pane, message string) error {
 	// 2. Wait 500ms for paste to complete (tested, required)
 	time.Sleep(500 * time.Millisecond)
 
-	// 3. Send Enter with retry (critical for message submission)
+	// 3. Send Escape to exit vim INSERT mode if enabled (harmless in normal mode)
+	// See: https://github.com/anthropics/gastown/issues/307
+	_, _ = t.run("send-keys", "-t", pane, "Escape")
+	time.Sleep(100 * time.Millisecond)
+
+	// 4. Send Enter with retry (critical for message submission)
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -404,6 +414,43 @@ func (t *Tmux) GetPaneWorkDir(session string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// GetPanePID returns the PID of the pane's main process.
+func (t *Tmux) GetPanePID(session string) (string, error) {
+	out, err := t.run("list-panes", "-t", session, "-F", "#{pane_pid}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// hasClaudeChild checks if a process has a child running claude/node.
+// Used when the pane command is a shell (bash, zsh) that launched claude.
+func hasClaudeChild(pid string) bool {
+	// Use pgrep to find child processes
+	cmd := exec.Command("pgrep", "-P", pid, "-l")
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	// Check if any child is node or claude
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Format: "PID name" e.g., "29677 node"
+		parts := strings.Fields(line)
+		if len(parts) >= 2 {
+			name := parts[1]
+			if name == "node" || name == "claude" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // FindSessionByWorkDir finds tmux sessions where the pane's current working directory
@@ -497,6 +544,28 @@ func (t *Tmux) GetEnvironment(session, key string) (string, error) {
 	return parts[1], nil
 }
 
+// GetAllEnvironment returns all environment variables for a session.
+func (t *Tmux) GetAllEnvironment(session string) (map[string]string, error) {
+	out, err := t.run("show-environment", "-t", session)
+	if err != nil {
+		return nil, err
+	}
+
+	env := make(map[string]string)
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "-") {
+			// Skip empty lines and unset markers (lines starting with -)
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			env[parts[0]] = parts[1]
+		}
+	}
+	return env, nil
+}
+
 // RenameSession renames a session.
 func (t *Tmux) RenameSession(oldName, newName string) error {
 	_, err := t.run("rename-session", "-t", oldName, newName)
@@ -575,6 +644,7 @@ func (t *Tmux) IsAgentRunning(session string, expectedPaneCommands ...string) bo
 // IsClaudeRunning checks if Claude appears to be running in the session.
 // Only trusts the pane command - UI markers in scrollback cause false positives.
 // Claude can report as "node", "claude", or a version number like "2.0.76".
+// Also checks for child processes when the pane is a shell running claude via "bash -c".
 func (t *Tmux) IsClaudeRunning(session string) bool {
 	// Check for known command names first
 	if t.IsAgentRunning(session, "node", "claude") {
@@ -586,7 +656,21 @@ func (t *Tmux) IsClaudeRunning(session string) bool {
 		return false
 	}
 	matched, _ := regexp.MatchString(`^\d+\.\d+\.\d+`, cmd)
-	return matched
+	if matched {
+		return true
+	}
+	// If pane command is a shell, check for claude/node child processes.
+	// This handles the case where sessions are started with "bash -c 'export ... && claude ...'"
+	for _, shell := range constants.SupportedShells {
+		if cmd == shell {
+			pid, err := t.GetPanePID(session)
+			if err == nil && pid != "" {
+				return hasClaudeChild(pid)
+			}
+			break
+		}
+	}
+	return false
 }
 
 // IsRuntimeRunning checks if a runtime appears to be running in the session.

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/claude"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
@@ -94,8 +95,15 @@ func (m *Manager) Start(agentOverride string) error {
 	}
 
 	// Set environment variables (non-fatal: session works without these)
-	_ = t.SetEnvironment(sessionID, "GT_ROLE", "mayor")
-	_ = t.SetEnvironment(sessionID, "BD_ACTOR", "mayor")
+	// Use centralized AgentEnv for consistency across all role startup paths
+	envVars := config.AgentEnv(config.AgentEnvConfig{
+		Role:     "mayor",
+		TownRoot: m.townRoot,
+		BeadsDir: beads.ResolveBeadsDir(m.townRoot),
+	})
+	for k, v := range envVars {
+		_ = t.SetEnvironment(sessionID, k, v)
+	}
 
 	// Apply Mayor theming (non-fatal: theming failure doesn't affect operation)
 	theme := tmux.MayorTheme()

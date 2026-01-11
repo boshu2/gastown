@@ -1170,6 +1170,7 @@ func BuildStartupCommandWithAgentOverride(envVars map[string]string, rigPath, pr
 	return cmd, nil
 }
 
+
 // BuildAgentStartupCommand is a convenience function for starting agent sessions.
 // It sets standard environment variables (GT_ROLE, BD_ACTOR, GIT_AUTHOR_NAME)
 // and builds the full startup command.
@@ -1195,55 +1196,23 @@ func BuildAgentStartupCommandWithAgentOverride(role, bdActor, rigPath, prompt, a
 // BuildPolecatStartupCommand builds the startup command for a polecat.
 // Sets GT_ROLE, GT_RIG, GT_POLECAT, BD_ACTOR, and GIT_AUTHOR_NAME.
 func BuildPolecatStartupCommand(rigName, polecatName, rigPath, prompt string) string {
-	bdActor := fmt.Sprintf("%s/polecats/%s", rigName, polecatName)
-	envVars := map[string]string{
-		"GT_ROLE":         "polecat",
-		"GT_RIG":          rigName,
-		"GT_POLECAT":      polecatName,
-		"BD_ACTOR":        bdActor,
-		"GIT_AUTHOR_NAME": polecatName,
-	}
-	return BuildStartupCommand(envVars, rigPath, prompt)
+	return BuildStartupCommand(AgentEnvSimple("polecat", rigName, polecatName), rigPath, prompt)
 }
 
 // BuildPolecatStartupCommandWithAgentOverride is like BuildPolecatStartupCommand, but uses agentOverride if non-empty.
 func BuildPolecatStartupCommandWithAgentOverride(rigName, polecatName, rigPath, prompt, agentOverride string) (string, error) {
-	bdActor := fmt.Sprintf("%s/polecats/%s", rigName, polecatName)
-	envVars := map[string]string{
-		"GT_ROLE":         "polecat",
-		"GT_RIG":          rigName,
-		"GT_POLECAT":      polecatName,
-		"BD_ACTOR":        bdActor,
-		"GIT_AUTHOR_NAME": polecatName,
-	}
-	return BuildStartupCommandWithAgentOverride(envVars, rigPath, prompt, agentOverride)
+	return BuildStartupCommandWithAgentOverride(AgentEnvSimple("polecat", rigName, polecatName), rigPath, prompt, agentOverride)
 }
 
 // BuildCrewStartupCommand builds the startup command for a crew member.
 // Sets GT_ROLE, GT_RIG, GT_CREW, BD_ACTOR, and GIT_AUTHOR_NAME.
 func BuildCrewStartupCommand(rigName, crewName, rigPath, prompt string) string {
-	bdActor := fmt.Sprintf("%s/crew/%s", rigName, crewName)
-	envVars := map[string]string{
-		"GT_ROLE":         "crew",
-		"GT_RIG":          rigName,
-		"GT_CREW":         crewName,
-		"BD_ACTOR":        bdActor,
-		"GIT_AUTHOR_NAME": crewName,
-	}
-	return BuildStartupCommand(envVars, rigPath, prompt)
+	return BuildStartupCommand(AgentEnvSimple("crew", rigName, crewName), rigPath, prompt)
 }
 
 // BuildCrewStartupCommandWithAgentOverride is like BuildCrewStartupCommand, but uses agentOverride if non-empty.
 func BuildCrewStartupCommandWithAgentOverride(rigName, crewName, rigPath, prompt, agentOverride string) (string, error) {
-	bdActor := fmt.Sprintf("%s/crew/%s", rigName, crewName)
-	envVars := map[string]string{
-		"GT_ROLE":         "crew",
-		"GT_RIG":          rigName,
-		"GT_CREW":         crewName,
-		"BD_ACTOR":        bdActor,
-		"GIT_AUTHOR_NAME": crewName,
-	}
-	return BuildStartupCommandWithAgentOverride(envVars, rigPath, prompt, agentOverride)
+	return BuildStartupCommandWithAgentOverride(AgentEnvSimple("crew", rigName, crewName), rigPath, prompt, agentOverride)
 }
 
 // ExpectedPaneCommands returns tmux pane command names that indicate the runtime is running.
@@ -1256,6 +1225,21 @@ func ExpectedPaneCommands(rc *RuntimeConfig) []string {
 		return []string{"node"}
 	}
 	return []string{filepath.Base(rc.Command)}
+}
+
+// GetDefaultFormula returns the default formula for a rig from settings/config.json.
+// Returns empty string if no default is configured.
+// rigPath is the path to the rig directory (e.g., ~/gt/gastown).
+func GetDefaultFormula(rigPath string) string {
+	settingsPath := RigSettingsPath(rigPath)
+	settings, err := LoadRigSettings(settingsPath)
+	if err != nil {
+		return ""
+	}
+	if settings.Workflow == nil {
+		return ""
+	}
+	return settings.Workflow.DefaultFormula
 }
 
 // GetRigPrefix returns the beads prefix for a rig from rigs.json.

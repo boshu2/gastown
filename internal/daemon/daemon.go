@@ -396,7 +396,7 @@ func (d *Daemon) ensureWitnessRunning(rigName string) {
 	}
 
 	// Manager.Start() handles: zombie detection, session creation, env vars, theming,
-	// WaitForClaudeReady, and crucially - startup/propulsion nudges (GUPP).
+	// startup readiness waits, and crucially - startup/propulsion nudges (GUPP).
 	// It returns ErrAlreadyRunning if Claude is already running in tmux.
 	r := &rig.Rig{
 		Name: rigName,
@@ -404,7 +404,7 @@ func (d *Daemon) ensureWitnessRunning(rigName string) {
 	}
 	mgr := witness.NewManager(r)
 
-	if err := mgr.Start(false); err != nil {
+	if err := mgr.Start(false, "", nil); err != nil {
 		if err == witness.ErrAlreadyRunning {
 			// Already running - nothing to do
 			return
@@ -745,7 +745,10 @@ func (d *Daemon) checkPolecatHealth(rigName, polecatName string) {
 
 	// Check if polecat has hooked work
 	if info.HookBead == "" {
-		// No hooked work - no need to restart (polecat was idle)
+		// No hooked work - this polecat is orphaned (should have self-nuked).
+		// Self-cleaning model: polecats nuke themselves on completion.
+		// An orphan with a dead session doesn't need restart - it needs cleanup.
+		// Let the Witness handle orphan detection/cleanup during patrol.
 		return
 	}
 
@@ -847,17 +850,21 @@ func (d *Daemon) restartPolecatSession(rigName, polecatName, sessionName string)
 	}
 
 	// Set environment variables
-	_ = d.tmux.SetEnvironment(sessionName, "GT_ROLE", "polecat")
-	_ = d.tmux.SetEnvironment(sessionName, "GT_RIG", rigName)
-	_ = d.tmux.SetEnvironment(sessionName, "GT_POLECAT", polecatName)
+	// Use centralized AgentEnvSimple for consistency across all role startup paths
+	envVars := config.AgentEnvSimple("polecat", rigName, polecatName)
 
-	bdActor := fmt.Sprintf("%s/polecats/%s", rigName, polecatName)
-	_ = d.tmux.SetEnvironment(sessionName, "BD_ACTOR", bdActor)
+	// Add polecat-specific beads configuration
+	// Use ResolveBeadsDir to follow redirects for repos with tracked beads
+	rigPath := filepath.Join(d.config.TownRoot, rigName)
+	beadsDir := beads.ResolveBeadsDir(rigPath)
+	envVars["BEADS_DIR"] = beadsDir
+	envVars["BEADS_NO_DAEMON"] = "1"
+	envVars["BEADS_AGENT_NAME"] = fmt.Sprintf("%s/%s", rigName, polecatName)
 
-	beadsDir := filepath.Join(d.config.TownRoot, rigName, ".beads")
-	_ = d.tmux.SetEnvironment(sessionName, "BEADS_DIR", beadsDir)
-	_ = d.tmux.SetEnvironment(sessionName, "BEADS_NO_DAEMON", "1")
-	_ = d.tmux.SetEnvironment(sessionName, "BEADS_AGENT_NAME", fmt.Sprintf("%s/%s", rigName, polecatName))
+	// Set all env vars in tmux session (for debugging) and they'll also be exported to Claude
+	for k, v := range envVars {
+		_ = d.tmux.SetEnvironment(sessionName, k, v)
+	}
 
 	// Apply theme
 	theme := tmux.AssignTheme(rigName)
@@ -869,8 +876,7 @@ func (d *Daemon) restartPolecatSession(rigName, polecatName, sessionName string)
 
 	// Launch Claude with environment exported inline
 	// Pass rigPath so rig agent settings are honored (not town-level defaults)
-	rigPath := filepath.Join(d.config.TownRoot, rigName)
-	startCmd := config.BuildPolecatStartupCommand(rigName, polecatName, rigPath, "")
+	startCmd := config.BuildStartupCommand(envVars, rigPath, "")
 	if err := d.tmux.SendKeys(sessionName, startCmd); err != nil {
 		return fmt.Errorf("sending startup command: %w", err)
 	}

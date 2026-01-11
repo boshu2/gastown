@@ -371,7 +371,7 @@ func (d *Daemon) restartSession(sessionName, identity string) error {
 	}
 
 	// Set environment variables
-	d.setSessionEnvironment(sessionName, identity, config, parsed)
+	d.setSessionEnvironment(sessionName, config, parsed)
 
 	// Apply theme (non-fatal: theming failure doesn't affect operation)
 	d.applySessionTheme(sessionName, parsed)
@@ -487,18 +487,31 @@ func (d *Daemon) getStartCommand(roleConfig *beads.RoleConfig, parsed *ParsedIde
 }
 
 // setSessionEnvironment sets environment variables for the tmux session.
-// Uses role bead config if available, falls back to hardcoded defaults.
-func (d *Daemon) setSessionEnvironment(sessionName, identity string, config *beads.RoleConfig, parsed *ParsedIdentity) {
-	// Always set GT_ROLE
-	_ = d.tmux.SetEnvironment(sessionName, "GT_ROLE", identity)
+// Uses centralized AgentEnv for consistency, plus role bead custom env vars if available.
+func (d *Daemon) setSessionEnvironment(sessionName string, roleConfig *beads.RoleConfig, parsed *ParsedIdentity) {
+	// Determine beads dir based on role type
+	var beadsPath string
+	if parsed.RigName != "" {
+		beadsPath = filepath.Join(d.config.TownRoot, parsed.RigName)
+	} else {
+		beadsPath = d.config.TownRoot
+	}
 
-	// BD_ACTOR uses slashes instead of dashes for path-like identity
-	bdActor := identityToBDActor(identity)
-	_ = d.tmux.SetEnvironment(sessionName, "BD_ACTOR", bdActor)
+	// Use centralized AgentEnv for base environment variables
+	envVars := config.AgentEnv(config.AgentEnvConfig{
+		Role:      parsed.RoleType,
+		Rig:       parsed.RigName,
+		AgentName: parsed.AgentName,
+		TownRoot:  d.config.TownRoot,
+		BeadsDir:  beads.ResolveBeadsDir(beadsPath),
+	})
+	for k, v := range envVars {
+		_ = d.tmux.SetEnvironment(sessionName, k, v)
+	}
 
-	// Set any custom env vars from role config
-	if config != nil {
-		for k, v := range config.EnvVars {
+	// Set any custom env vars from role config (bead-defined overrides)
+	if roleConfig != nil {
+		for k, v := range roleConfig.EnvVars {
 			expanded := beads.ExpandRolePattern(v, d.config.TownRoot, parsed.RigName, parsed.AgentName, parsed.RoleType)
 			_ = d.tmux.SetEnvironment(sessionName, k, expanded)
 		}
@@ -735,7 +748,7 @@ func (d *Daemon) checkGUPPViolations() {
 // checkRigGUPPViolations checks polecats in a specific rig for GUPP violations.
 func (d *Daemon) checkRigGUPPViolations(rigName string) {
 	// List polecat agent beads for this rig
-	// Pattern: gt-polecat-<rig>-<name>
+	// Pattern: <prefix>-<rig>-polecat-<name> (e.g., gt-gastown-polecat-Toast)
 	cmd := exec.Command("bd", "list", "--type=agent", "--json")
 	cmd.Dir = d.config.TownRoot
 
@@ -757,7 +770,10 @@ func (d *Daemon) checkRigGUPPViolations(rigName string) {
 		return
 	}
 
-	prefix := "gt-polecat-" + rigName + "-"
+	// Use the rig's configured prefix (e.g., "gt" for gastown, "bd" for beads)
+	rigPrefix := config.GetRigPrefix(d.config.TownRoot, rigName)
+	// Pattern: <prefix>-<rig>-polecat-<name>
+	prefix := rigPrefix + "-" + rigName + "-polecat-"
 	for _, agent := range agents {
 		// Only check polecats for this rig
 		if !strings.HasPrefix(agent.ID, prefix) {
@@ -771,7 +787,7 @@ func (d *Daemon) checkRigGUPPViolations(rigName string) {
 		}
 
 		// Per gt-zecmc: derive running state from tmux, not agent_state
-		// Extract polecat name from agent ID (gt-polecat-<rig>-<name> -> <name>)
+		// Extract polecat name from agent ID (<prefix>-<rig>-polecat-<name> -> <name>)
 		polecatName := strings.TrimPrefix(agent.ID, prefix)
 		sessionName := fmt.Sprintf("gt-%s-%s", rigName, polecatName)
 
@@ -847,7 +863,10 @@ func (d *Daemon) checkRigOrphanedWork(rigName string) {
 		return
 	}
 
-	prefix := "gt-polecat-" + rigName + "-"
+	// Use the rig's configured prefix (e.g., "gt" for gastown, "bd" for beads)
+	rigPrefix := config.GetRigPrefix(d.config.TownRoot, rigName)
+	// Pattern: <prefix>-<rig>-polecat-<name>
+	prefix := rigPrefix + "-" + rigName + "-polecat-"
 	for _, agent := range agents {
 		// Only check polecats for this rig
 		if !strings.HasPrefix(agent.ID, prefix) {
@@ -877,21 +896,15 @@ func (d *Daemon) checkRigOrphanedWork(rigName string) {
 }
 
 // extractRigFromAgentID extracts the rig name from a polecat agent ID.
-// Example: gt-polecat-gastown-max → gastown
+// Example: gt-gastown-polecat-max → gastown
 func (d *Daemon) extractRigFromAgentID(agentID string) string {
-	// Pattern: gt-polecat-<rig>-<name>
-	if !strings.HasPrefix(agentID, "gt-polecat-") {
+	// Use the beads package helper to correctly parse agent bead IDs.
+	// Pattern: <prefix>-<rig>-polecat-<name> (e.g., gt-gastown-polecat-Toast)
+	rig, role, _, ok := beads.ParseAgentBeadID(agentID)
+	if !ok || role != "polecat" {
 		return ""
 	}
-
-	rest := strings.TrimPrefix(agentID, "gt-polecat-")
-	// Find the rig name (everything before the last dash)
-	lastDash := strings.LastIndex(rest, "-")
-	if lastDash == -1 {
-		return ""
-	}
-
-	return rest[:lastDash]
+	return rig
 }
 
 // notifyWitnessOfOrphanedWork sends a mail to the rig's witness about orphaned work.

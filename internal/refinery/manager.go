@@ -114,9 +114,10 @@ func (m *Manager) Start(foreground bool) error {
 	sessionID := m.SessionName()
 
 	if foreground {
-		// In foreground mode, we're likely running inside the tmux session
-		// that background mode created. Only check PID to avoid self-detection.
-		if ref.State == StateRunning && ref.PID > 0 && util.ProcessExists(ref.PID) {
+		// In foreground mode, check tmux session (no PID inference per ZFC)
+		townRoot := filepath.Dir(m.rig.Path)
+		agentCfg := config.ResolveAgentConfig(townRoot, m.rig.Path)
+		if running, _ := t.HasSession(sessionID); running && t.IsAgentRunning(sessionID, config.ExpectedPaneCommands(agentCfg)...) {
 			return ErrAlreadyRunning
 		}
 
@@ -124,7 +125,7 @@ func (m *Manager) Start(foreground bool) error {
 		now := time.Now()
 		ref.State = StateRunning
 		ref.StartedAt = &now
-		ref.PID = os.Getpid()
+		ref.PID = 0 // No longer track PID (ZFC)
 
 		if err := m.saveState(ref); err != nil {
 			return err
@@ -151,10 +152,7 @@ func (m *Manager) Start(foreground bool) error {
 		}
 	}
 
-	// Also check via PID for backwards compatibility
-	if ref.State == StateRunning && ref.PID > 0 && util.ProcessExists(ref.PID) {
-		return ErrAlreadyRunning
-	}
+	// Note: No PID check per ZFC - tmux session is the source of truth
 
 	// Background mode: spawn a Claude agent in a tmux session
 	// The Claude agent handles MR processing using git commands and beads
@@ -186,17 +184,23 @@ func (m *Manager) Start(foreground bool) error {
 	}
 
 	// Set environment variables (non-fatal: session works without these)
-	_ = t.SetEnvironment(sessionID, "GT_RIG", m.rig.Name)
-	_ = t.SetEnvironment(sessionID, "GT_REFINERY", "1")
-	_ = t.SetEnvironment(sessionID, "GT_ROLE", "refinery")
-	_ = t.SetEnvironment(sessionID, "BD_ACTOR", bdActor)
+	// Use centralized AgentEnv for consistency across all role startup paths
+	townRoot := filepath.Dir(m.rig.Path)
+	envVars := config.AgentEnv(config.AgentEnvConfig{
+		Role:          "refinery",
+		Rig:           m.rig.Name,
+		TownRoot:      townRoot,
+		BeadsDir:      beads.ResolveBeadsDir(m.rig.Path),
+		BeadsNoDaemon: true,
+	})
 
-	// Set beads environment - refinery uses rig-level beads (non-fatal)
-	// Use ResolveBeadsDir to handle both tracked (mayor/rig) and local beads
-	beadsDir := beads.ResolveBeadsDir(m.rig.Path)
-	_ = t.SetEnvironment(sessionID, "BEADS_DIR", beadsDir)
-	_ = t.SetEnvironment(sessionID, "BEADS_NO_DAEMON", "1")
-	_ = t.SetEnvironment(sessionID, "BEADS_AGENT_NAME", fmt.Sprintf("%s/refinery", m.rig.Name))
+	// Add refinery-specific flag
+	envVars["GT_REFINERY"] = "1"
+
+	// Set all env vars in tmux session (for debugging) and they'll also be exported to Claude
+	for k, v := range envVars {
+		_ = t.SetEnvironment(sessionID, k, v)
+	}
 
 	// Apply theme (non-fatal: theming failure doesn't affect operation)
 	theme := tmux.AssignTheme(m.rig.Name)
@@ -264,13 +268,7 @@ func (m *Manager) Stop() error {
 		_ = t.KillSession(sessionID)
 	}
 
-	// If we have a PID and it's a different process, try to stop it gracefully
-	if ref.PID > 0 && ref.PID != os.Getpid() && util.ProcessExists(ref.PID) {
-		// Send SIGTERM (best-effort graceful stop)
-		if proc, err := os.FindProcess(ref.PID); err == nil {
-			_ = proc.Signal(os.Interrupt)
-		}
-	}
+	// Note: No PID-based stop per ZFC - tmux session kill is sufficient
 
 	ref.State = StateStopped
 	ref.PID = 0
@@ -665,7 +663,7 @@ func (m *Manager) FindMR(idOrBranch string) (*MergeRequest, error) {
 		if item.MR.Branch == idOrBranch {
 			return item.MR, nil
 		}
-		if "polecat/"+idOrBranch == item.MR.Branch {
+		if constants.BranchPolecatPrefix+idOrBranch == item.MR.Branch {
 			return item.MR, nil
 		}
 		// Match by worker name (partial match for convenience)

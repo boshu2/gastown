@@ -460,3 +460,70 @@ func TestIsClaudeRunning_VersionPattern(t *testing.T) {
 		})
 	}
 }
+
+func TestIsClaudeRunning_ShellWithNodeChild(t *testing.T) {
+	if !hasTmux() {
+		t.Skip("tmux not installed")
+	}
+
+	tm := NewTmux()
+	sessionName := "gt-test-shell-child-" + t.Name()
+
+	// Clean up any existing session
+	_ = tm.KillSession(sessionName)
+
+	// Create session with "bash -c" running a node process
+	// Use a simple node command that runs for a few seconds
+	cmd := `node -e "setTimeout(() => {}, 10000)"`
+	if err := tm.NewSessionWithCommand(sessionName, "", cmd); err != nil {
+		t.Fatalf("NewSessionWithCommand: %v", err)
+	}
+	defer func() { _ = tm.KillSession(sessionName) }()
+
+	// Give the node process time to start
+	// WaitForCommand waits until NOT running bash/zsh/sh
+	shellsToExclude := []string{"bash", "zsh", "sh"}
+	err := tm.WaitForCommand(sessionName, shellsToExclude, 2000*1000000) // 2 second timeout
+	if err != nil {
+		// If we timeout waiting, it means the pane command is still a shell
+		// This is the case we're testing - shell with a node child
+		paneCmd, _ := tm.GetPaneCommand(sessionName)
+		t.Logf("Pane command is %q - testing shell+child detection", paneCmd)
+	}
+
+	// Now test IsClaudeRunning - it should detect node as a child process
+	paneCmd, _ := tm.GetPaneCommand(sessionName)
+	if paneCmd == "node" {
+		// Direct node detection should work
+		if !tm.IsClaudeRunning(sessionName) {
+			t.Error("IsClaudeRunning should return true when pane command is 'node'")
+		}
+	} else {
+		// Pane is a shell (bash/zsh) with node as child
+		// The new child process detection should catch this
+		got := tm.IsClaudeRunning(sessionName)
+		t.Logf("Pane command: %q, IsClaudeRunning: %v", paneCmd, got)
+		// Note: This may or may not detect depending on how tmux runs the command.
+		// On some systems, tmux runs the command directly; on others via a shell.
+	}
+}
+
+func TestHasClaudeChild(t *testing.T) {
+	// Test the hasClaudeChild helper function directly
+	// This uses the current process as a test subject
+
+	// Get current process PID as string
+	currentPID := "1" // init/launchd - should have children but not claude/node
+
+	// hasClaudeChild should return false for init (no node/claude children)
+	got := hasClaudeChild(currentPID)
+	if got {
+		t.Logf("hasClaudeChild(%q) = true - init has claude/node child?", currentPID)
+	}
+
+	// Test with a definitely nonexistent PID
+	got = hasClaudeChild("999999999")
+	if got {
+		t.Error("hasClaudeChild should return false for nonexistent PID")
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/crew"
+	"github.com/steveyegge/gastown/internal/daemon"
 	"github.com/steveyegge/gastown/internal/deacon"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mayor"
@@ -65,11 +66,15 @@ To stop Gas Town, use 'gt shutdown'.`,
 var shutdownCmd = &cobra.Command{
 	Use:     "shutdown",
 	GroupID: GroupServices,
-	Short:   "Shutdown Gas Town",
+	Short:   "Shutdown Gas Town with cleanup",
 	Long: `Shutdown Gas Town by stopping agents and cleaning up polecats.
 
-By default, preserves crew sessions (your persistent workspaces).
-Prompts for confirmation before stopping.
+This is the "done for the day" command - it stops everything AND removes
+polecat worktrees/branches. For a reversible pause, use 'gt down' instead.
+
+Comparison:
+  gt down      - Pause (stop processes, keep worktrees) - reversible
+  gt shutdown  - Done (stop + cleanup worktrees) - permanent cleanup
 
 After killing sessions, polecats are cleaned up:
   - Worktrees are removed
@@ -77,9 +82,9 @@ After killing sessions, polecats are cleaned up:
   - Polecats with uncommitted work are SKIPPED (protected)
 
 Shutdown levels (progressively more aggressive):
-  (default)       - Stop infrastructure (Mayor, Deacon, Witnesses, Refineries, Polecats)
+  (default)       - Stop infrastructure + polecats + cleanup
   --all           - Also stop crew sessions
-  --polecats-only - Only stop polecats (leaves everything else running)
+  --polecats-only - Only stop polecats (leaves infrastructure running)
 
 Use --force or --yes to skip confirmation prompt.
 Use --graceful to allow agents time to save state before killing.
@@ -234,7 +239,7 @@ func startRigAgents(t *tmux.Tmux, townRoot string) {
 			fmt.Printf("  %s %s witness already running\n", style.Dim.Render("○"), r.Name)
 		} else {
 			witMgr := witness.NewManager(r)
-			if err := witMgr.Start(false); err != nil {
+			if err := witMgr.Start(false, "", nil); err != nil {
 				if err == witness.ErrAlreadyRunning {
 					fmt.Printf("  %s %s witness already running\n", style.Dim.Render("○"), r.Name)
 				} else {
@@ -473,6 +478,12 @@ func runGracefulShutdown(t *tmux.Tmux, gtSessions []string, townRoot string) err
 		cleanupPolecats(townRoot)
 	}
 
+	// Phase 6: Stop the daemon
+	fmt.Printf("\nPhase 6: Stopping daemon...\n")
+	if townRoot != "" {
+		stopDaemonIfRunning(townRoot)
+	}
+
 	fmt.Println()
 	fmt.Printf("%s Graceful shutdown complete (%d sessions stopped)\n", style.Bold.Render("✓"), stopped)
 	return nil
@@ -490,6 +501,13 @@ func runImmediateShutdown(t *tmux.Tmux, gtSessions []string, townRoot string) er
 		fmt.Println()
 		fmt.Println("Cleaning up polecats...")
 		cleanupPolecats(townRoot)
+	}
+
+	// Stop the daemon
+	if townRoot != "" {
+		fmt.Println()
+		fmt.Println("Stopping daemon...")
+		stopDaemonIfRunning(townRoot)
 	}
 
 	fmt.Println()
@@ -638,6 +656,21 @@ func cleanupPolecats(townRoot string) {
 		fmt.Printf("  Cleaned: %d, Skipped: %d\n", totalCleaned, totalSkipped)
 	} else {
 		fmt.Printf("  %s No polecats to clean up\n", style.Dim.Render("○"))
+	}
+}
+
+// stopDaemonIfRunning stops the daemon if it is running.
+// This prevents the daemon from restarting agents after shutdown.
+func stopDaemonIfRunning(townRoot string) {
+	running, _, _ := daemon.IsRunning(townRoot)
+	if running {
+		if err := daemon.StopDaemon(townRoot); err != nil {
+			fmt.Printf("  %s Daemon: %s\n", style.Dim.Render("○"), err.Error())
+		} else {
+			fmt.Printf("  %s Daemon stopped\n", style.Bold.Render("✓"))
+		}
+	} else {
+		fmt.Printf("  %s Daemon not running\n", style.Dim.Render("○"))
 	}
 }
 

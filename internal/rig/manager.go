@@ -16,8 +16,6 @@ import (
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/git"
-	"github.com/steveyegge/gastown/internal/templates"
-	"github.com/steveyegge/gastown/internal/workspace"
 )
 
 // Common errors
@@ -385,6 +383,15 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 		return nil, fmt.Errorf("initializing beads: %w", err)
 	}
 	fmt.Printf("   ✓ Initialized beads (prefix: %s)\n", opts.BeadsPrefix)
+
+	// Provision PRIME.md with Gas Town context for all workers in this rig.
+	// This is the fallback if SessionStart hook fails - ensures ALL workers
+	// (crew, polecats, refinery, witness) have GUPP and essential Gas Town context.
+	// PRIME.md is read by bd prime and output to the agent.
+	rigBeadsPath := filepath.Join(rigPath, ".beads")
+	if err := beads.ProvisionPrimeMD(rigBeadsPath); err != nil {
+		fmt.Printf("  Warning: Could not provision PRIME.md: %v\n", err)
+	}
 
 	// Create refinery as worktree from bare repo on default branch.
 	// Refinery needs to see polecat branches (shared .repo.git) and merges them.
@@ -891,46 +898,75 @@ func (m *Manager) ListRigNames() []string {
 	return names
 }
 
-// createRoleCLAUDEmd creates a CLAUDE.md file with role-specific context.
-// This ensures each workspace (crew, refinery, mayor) gets the correct prompting,
-// overriding any CLAUDE.md that may exist in the cloned repository.
+// createRoleCLAUDEmd creates a minimal bootstrap pointer CLAUDE.md file.
+// Full context is injected ephemerally by `gt prime` at session start.
+// This keeps on-disk files small (<30 lines) per the priming architecture.
 func (m *Manager) createRoleCLAUDEmd(workspacePath string, role string, rigName string, workerName string) error {
-	tmpl, err := templates.New()
-	if err != nil {
-		return err
-	}
+	// Create role-specific bootstrap pointer
+	var bootstrap string
+	switch role {
+	case "mayor":
+		bootstrap = `# Mayor Context (` + rigName + `)
 
-	// Get town name for session names
-	townName, _ := workspace.GetTownName(m.townRoot)
+> **Recovery**: Run ` + "`gt prime`" + ` after compaction, clear, or new session
 
-	// Get default branch from rig config (default to "main" if not set)
-	defaultBranch := "main"
-	if rigName != "" {
-		rigPath := filepath.Join(m.townRoot, rigName)
-		if rigCfg, err := LoadRigConfig(rigPath); err == nil && rigCfg.DefaultBranch != "" {
-			defaultBranch = rigCfg.DefaultBranch
+Full context is injected by ` + "`gt prime`" + ` at session start.
+`
+	case "refinery":
+		bootstrap = `# Refinery Context (` + rigName + `)
+
+> **Recovery**: Run ` + "`gt prime`" + ` after compaction, clear, or new session
+
+Full context is injected by ` + "`gt prime`" + ` at session start.
+
+## Quick Reference
+
+- Check MQ: ` + "`gt mq list`" + `
+- Process next: ` + "`gt mq process`" + `
+`
+	case "crew":
+		name := workerName
+		if name == "" {
+			name = "worker"
 		}
-	}
+		bootstrap = `# Crew Context (` + rigName + `/` + name + `)
 
-	data := templates.RoleData{
-		Role:          role,
-		RigName:       rigName,
-		TownRoot:      m.townRoot,
-		TownName:      townName,
-		WorkDir:       workspacePath,
-		DefaultBranch: defaultBranch,
-		Polecat:       workerName, // Used for crew member name as well
-		MayorSession:  fmt.Sprintf("gt-%s-mayor", townName),
-		DeaconSession: fmt.Sprintf("gt-%s-deacon", townName),
-	}
+> **Recovery**: Run ` + "`gt prime`" + ` after compaction, clear, or new session
 
-	content, err := tmpl.RenderRole(role, data)
-	if err != nil {
-		return err
+Full context is injected by ` + "`gt prime`" + ` at session start.
+
+## Quick Reference
+
+- Check hook: ` + "`gt hook`" + `
+- Check mail: ` + "`gt mail inbox`" + `
+`
+	case "polecat":
+		name := workerName
+		if name == "" {
+			name = "worker"
+		}
+		bootstrap = `# Polecat Context (` + rigName + `/` + name + `)
+
+> **Recovery**: Run ` + "`gt prime`" + ` after compaction, clear, or new session
+
+Full context is injected by ` + "`gt prime`" + ` at session start.
+
+## Quick Reference
+
+- Check hook: ` + "`gt hook`" + `
+- Report done: ` + "`gt done`" + `
+`
+	default:
+		bootstrap = `# Agent Context
+
+> **Recovery**: Run ` + "`gt prime`" + ` after compaction, clear, or new session
+
+Full context is injected by ` + "`gt prime`" + ` at session start.
+`
 	}
 
 	claudePath := filepath.Join(workspacePath, "CLAUDE.md")
-	return os.WriteFile(claudePath, []byte(content), 0644)
+	return os.WriteFile(claudePath, []byte(bootstrap), 0644)
 }
 
 // createPatrolHooks creates .claude/settings.json with hooks for patrol roles.

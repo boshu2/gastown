@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-01-11
+
+### Added
+- **`gt mail mark-read`** - Mark messages as read without opening them (desire path)
+- **`gt down --polecats`** - Shut down polecats without affecting other components
+- **Self-cleaning polecat model** - Polecats self-nuke on completion, witness tracks leases
+- **`gt prime --state` validation** - Flag exclusivity checks for cleaner CLI
+
+### Changed
+- **Removed `gt stop`** - Use `gt down --polecats` instead (cleaner semantics)
+- **Policy-neutral templates** - crew.md.tmpl checks remote origin for PR policy
+- **Refactored prime.go** - Split 1833-line file into logical modules
+
+### Fixed
+- **Polecat re-spawn** - CreateOrReopenAgentBead handles polecat lifecycle correctly (#333)
+- **Vim mode compatibility** - tmux sends Escape before Enter for vim users
+- **Worktree default branch** - Uses rig's configured default branch (#325)
+- **Agent bead type** - Sets --type=agent when creating agent beads
+- **Bootstrap priming** - Reduced AGENTS.md to bootstrap pointer, fixed CLAUDE.md templates
+
+### Documentation
+- Updated witness help text for self-cleaning model
+- Updated daemon comments for self-cleaning model
+- Policy-aware PR guidance in crew template
+
+## [0.2.4] - 2026-01-10
+
+Priming subsystem overhaul and Zero Framework Cognition (ZFC) improvements.
+
+### Added
+
+#### Priming Subsystem
+- **PRIME.md provisioning** - Auto-provision PRIME.md at rig level so all workers inherit Gas Town context (GUPP, hooks, propulsion) (#hq-5z76w)
+- **Post-handoff detection** - `gt prime` detects handoff marker and outputs "HANDOFF COMPLETE" warning to prevent handoff loop bug (#hq-ukjrr)
+- **Priming health checks** - `gt doctor` validates priming subsystem: SessionStart hook, gt prime command, PRIME.md presence, CLAUDE.md size (#hq-5scnt)
+- **`gt prime --dry-run`** - Preview priming without side effects
+- **`gt prime --state`** - Output session state (normal, post-handoff, crash-recovery, autonomous)
+- **`gt prime --explain`** - Add [EXPLAIN] tags for debugging priming decisions
+
+#### Formula & Configuration
+- **Rig-level default formulas** - Configure default formula at rig level (#297)
+- **Witness --agent/--env overrides** - Override agent and environment variables for witness (#293, #294)
+
+#### Developer Experience
+- **UX system import** - Comprehensive UX system from beads (#311)
+- **Explicit handoff instructions** - Clearer nudge message for handoff recipients
+
+### Fixed
+
+#### Zero Framework Cognition (ZFC)
+- **Query tmux directly** - Remove marker TTL, query tmux for agent state
+- **Remove PID-based detection** - Agent liveness from tmux, not PIDs
+- **Agent-controlled thresholds** - Stuck detection moved to agent config
+- **Remove pending.json tracking** - Eliminated anti-pattern
+- **Derive state from files** - ZFC state from filesystem, not memory cache
+- **Remove Go-side computation** - No stderr parsing violations
+
+#### Hooks & Beads
+- **Cross-level hook visibility** - Hooked beads visible to mayor/deacon (#aeb4c0d)
+- **Warn on closed hooked bead** - Alert when hooked bead already closed (#2f50a59)
+- **Correct agent bead ID format** - Fix bd create flags for agent beads (#c4fcdd8)
+
+#### Formula
+- **rigPath fallback** - Set rigPath when falling back to gastown default (#afb944f)
+
+#### Doctor
+- **Full AgentEnv for env-vars check** - Use complete environment for validation (#ce231a3)
+
+### Changed
+
+- **Refactored beads/mail modules** - Split large files into focused modules for maintainability
+
 ## [0.2.3] - 2026-01-09
 
 Worker safety release - prevents accidental termination of active agents.

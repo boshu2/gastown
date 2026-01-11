@@ -38,6 +38,7 @@ Town root protection:
   - pre-checkout-hook        Verify pre-checkout hook prevents branch switches (fixable)
 
 Infrastructure checks:
+  - stale-binary             Check if gt binary is up to date with repo
   - daemon                   Check if daemon is running (fixable)
   - repo-fingerprint         Check database has valid repo fingerprint (fixable)
   - boot-health              Check Boot watchdog health (vet mode)
@@ -116,6 +117,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	d.Register(doctor.NewGlobalStateCheck())
 
 	// Register built-in checks
+	d.Register(doctor.NewStaleBinaryCheck())
 	d.Register(doctor.NewTownGitCheck())
 	d.Register(doctor.NewTownRootBranchCheck())
 	d.Register(doctor.NewPreCheckoutHookCheck())
@@ -131,7 +133,6 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	d.Register(doctor.NewRoutesCheck())
 	d.Register(doctor.NewOrphanSessionCheck())
 	d.Register(doctor.NewOrphanProcessCheck())
-	d.Register(doctor.NewGTRootCheck())
 	d.Register(doctor.NewWispGCCheck())
 	d.Register(doctor.NewBranchCheck())
 	d.Register(doctor.NewBeadsSyncOrphanCheck())
@@ -140,6 +141,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	d.Register(doctor.NewLinkedPaneCheck())
 	d.Register(doctor.NewThemeCheck())
 	d.Register(doctor.NewCrashReportCheck())
+	d.Register(doctor.NewEnvVarsCheck())
 
 	// Patrol system checks
 	d.Register(doctor.NewPatrolMoleculesExistCheck())
@@ -158,6 +160,9 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	d.Register(doctor.NewRuntimeGitignoreCheck())
 	d.Register(doctor.NewLegacyGastownCheck())
 	d.Register(doctor.NewClaudeSettingsCheck())
+
+	// Priming subsystem check
+	d.Register(doctor.NewPrimingCheck())
 
 	// Crew workspace checks
 	d.Register(doctor.NewCrewStateCheck())

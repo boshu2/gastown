@@ -27,7 +27,7 @@ This is a convenience command for polecats that:
 1. Submits the current branch to the merge queue
 2. Auto-detects issue ID from branch name
 3. Notifies the Witness with the exit outcome
-4. Optionally exits the Claude session (--exit flag)
+4. Exits the Claude session (polecats don't stay alive after completion)
 
 Exit statuses:
   COMPLETED      - Work done, MR submitted (default)
@@ -42,8 +42,7 @@ Phase handoff workflow:
   resolves.
 
 Examples:
-  gt done                              # Submit branch, notify COMPLETED
-  gt done --exit                       # Submit and exit Claude session
+  gt done                              # Submit branch, notify COMPLETED, exit session
   gt done --issue gt-abc               # Explicit issue ID
   gt done --status ESCALATED           # Signal blocker, skip MR
   gt done --status DEFERRED            # Pause work, skip MR
@@ -55,9 +54,9 @@ var (
 	doneIssue         string
 	donePriority      int
 	doneStatus        string
-	doneExit          bool
 	donePhaseComplete bool
 	doneGate          string
+	doneCleanupStatus string
 )
 
 // Valid exit types for gt done
@@ -72,9 +71,9 @@ func init() {
 	doneCmd.Flags().StringVar(&doneIssue, "issue", "", "Source issue ID (default: parse from branch name)")
 	doneCmd.Flags().IntVarP(&donePriority, "priority", "p", -1, "Override priority (0-4, default: inherit from issue)")
 	doneCmd.Flags().StringVar(&doneStatus, "status", ExitCompleted, "Exit status: COMPLETED, ESCALATED, or DEFERRED")
-	doneCmd.Flags().BoolVar(&doneExit, "exit", false, "Exit Claude session after MR submission (self-terminate)")
 	doneCmd.Flags().BoolVar(&donePhaseComplete, "phase-complete", false, "Signal phase complete - await gate before continuing")
 	doneCmd.Flags().StringVar(&doneGate, "gate", "", "Gate bead ID to wait on (with --phase-complete)")
+	doneCmd.Flags().StringVar(&doneCleanupStatus, "cleanup-status", "", "Git cleanup status: clean, uncommitted, unpushed, stash, unknown (ZFC: agent-observed)")
 
 	rootCmd.AddCommand(doneCmd)
 }
@@ -344,16 +343,31 @@ func runDone(cmd *cobra.Command, args []string) error {
 	// Update agent bead state (ZFC: self-report completion)
 	updateAgentStateOnDone(cwd, townRoot, exitType, issueID)
 
-	// Handle session self-termination if requested
-	if doneExit {
-		fmt.Println()
-		fmt.Printf("%s Session self-terminating (--exit flag)\n", style.Bold.Render("→"))
-		fmt.Printf("  Witness will handle worktree cleanup.\n")
-		fmt.Printf("  Goodbye!\n")
-		os.Exit(0)
+	// Self-cleaning: Nuke our own sandbox before exiting (if we're a polecat)
+	// This is the self-cleaning model - polecats clean up after themselves
+	selfNukeAttempted := false
+	if exitType == ExitCompleted {
+		if roleInfo, err := GetRoleWithContext(cwd, townRoot); err == nil && roleInfo.Role == RolePolecat {
+			selfNukeAttempted = true
+			if err := selfNukePolecat(roleInfo, townRoot); err != nil {
+				// Non-fatal: Witness will clean up if we fail
+				style.PrintWarning("self-nuke failed: %v (Witness will clean up)", err)
+			} else {
+				fmt.Printf("%s Sandbox nuked\n", style.Bold.Render("✓"))
+			}
+		}
 	}
 
-	return nil
+	// Always exit session - polecats don't stay alive after completion
+	fmt.Println()
+	fmt.Printf("%s Session exiting (done means gone)\n", style.Bold.Render("→"))
+	if !selfNukeAttempted {
+		fmt.Printf("  Witness will handle worktree cleanup.\n")
+	}
+	fmt.Printf("  Goodbye!\n")
+	os.Exit(0)
+
+	return nil // unreachable, but keeps compiler happy
 }
 
 // updateAgentStateOnDone clears the agent's hook and reports cleanup status.
@@ -428,13 +442,14 @@ func updateAgentStateOnDone(cwd, townRoot, exitType, _ string) { // issueID unus
 	}
 
 	// ZFC #10: Self-report cleanup status
-	// Compute git state and report so Witness can decide removal safety
-	cleanupStatus := computeCleanupStatus(cwd)
-	if cleanupStatus != polecat.CleanupUnknown {
-		if err := bd.UpdateAgentCleanupStatus(agentBeadID, string(cleanupStatus)); err != nil {
-			// Log warning instead of silent ignore
-			fmt.Fprintf(os.Stderr, "Warning: couldn't update agent %s cleanup status: %v\n", agentBeadID, err)
-			return
+	// Agent observes git state and passes cleanup status via --cleanup-status flag
+	if doneCleanupStatus != "" {
+		cleanupStatus := parseCleanupStatus(doneCleanupStatus)
+		if cleanupStatus != polecat.CleanupUnknown {
+			if err := bd.UpdateAgentCleanupStatus(agentBeadID, string(cleanupStatus)); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: couldn't update agent %s cleanup status: %v\n", agentBeadID, err)
+				return
+			}
 		}
 	}
 }
@@ -460,25 +475,45 @@ func getDispatcherFromBead(cwd, issueID string) string {
 	return fields.DispatchedBy
 }
 
-// computeCleanupStatus checks git state and returns the cleanup status.
-// Returns the most critical issue: has_unpushed > has_stash > has_uncommitted > clean
-func computeCleanupStatus(cwd string) polecat.CleanupStatus {
-	g := git.NewGit(cwd)
-	status, err := g.CheckUncommittedWork()
-	if err != nil {
-		// If we can't check, report unknown - Witness should be cautious
+// parseCleanupStatus converts a string flag value to a CleanupStatus.
+// ZFC: Agent observes git state and passes the appropriate status.
+func parseCleanupStatus(s string) polecat.CleanupStatus {
+	switch strings.ToLower(s) {
+	case "clean":
+		return polecat.CleanupClean
+	case "uncommitted", "has_uncommitted":
+		return polecat.CleanupUncommitted
+	case "stash", "has_stash":
+		return polecat.CleanupStash
+	case "unpushed", "has_unpushed":
+		return polecat.CleanupUnpushed
+	default:
 		return polecat.CleanupUnknown
 	}
+}
 
-	// Check in priority order (most critical first)
-	if status.UnpushedCommits > 0 {
-		return polecat.CleanupUnpushed
+// selfNukePolecat deletes this polecat's worktree (self-cleaning model).
+// Called by polecats when they complete work via `gt done`.
+// This is safe because:
+// 1. Work has been pushed to origin (MR is in queue)
+// 2. We're about to exit anyway
+// 3. Unix allows deleting directories while processes run in them
+func selfNukePolecat(roleInfo RoleInfo, _ string) error {
+	if roleInfo.Role != RolePolecat || roleInfo.Polecat == "" || roleInfo.Rig == "" {
+		return fmt.Errorf("not a polecat: role=%s, polecat=%s, rig=%s", roleInfo.Role, roleInfo.Polecat, roleInfo.Rig)
 	}
-	if status.StashCount > 0 {
-		return polecat.CleanupStash
+
+	// Get polecat manager using existing helper
+	mgr, _, err := getPolecatManager(roleInfo.Rig)
+	if err != nil {
+		return fmt.Errorf("getting polecat manager: %w", err)
 	}
-	if status.HasUncommittedChanges {
-		return polecat.CleanupUncommitted
+
+	// Use nuclear=true since we know we just pushed our work
+	// The branch is pushed, MR is created, we're clean
+	if err := mgr.RemoveWithOptions(roleInfo.Polecat, true, true); err != nil {
+		return fmt.Errorf("removing worktree: %w", err)
 	}
-	return polecat.CleanupClean
+
+	return nil
 }

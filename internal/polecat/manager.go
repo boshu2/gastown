@@ -261,11 +261,19 @@ func (m *Manager) AddWithOptions(name string, opts AddOptions) (*Polecat, error)
 		return nil, fmt.Errorf("finding repo base: %w", err)
 	}
 
+	// Determine the start point for the new worktree
+	// Use origin/<default-branch> to ensure we start from the rig's configured branch
+	defaultBranch := "main"
+	if rigCfg, err := rig.LoadRigConfig(m.rig.Path); err == nil && rigCfg.DefaultBranch != "" {
+		defaultBranch = rigCfg.DefaultBranch
+	}
+	startPoint := fmt.Sprintf("origin/%s", defaultBranch)
+
 	// Always create fresh branch - unique name guarantees no collision
-	// git worktree add -b polecat/<name>-<timestamp> <path>
+	// git worktree add -b polecat/<name>-<timestamp> <path> <startpoint>
 	// Worktree goes in polecats/<name>/<rigname>/ for LLM ergonomics
-	if err := repoGit.WorktreeAdd(clonePath, branchName); err != nil {
-		return nil, fmt.Errorf("creating worktree: %w", err)
+	if err := repoGit.WorktreeAddFromRef(clonePath, branchName, startPoint); err != nil {
+		return nil, fmt.Errorf("creating worktree from %s: %w", startPoint, err)
 	}
 
 	// NOTE: We intentionally do NOT write to CLAUDE.md here.
@@ -281,6 +289,14 @@ func (m *Manager) AddWithOptions(name string, opts AddOptions) (*Polecat, error)
 		fmt.Printf("Warning: could not set up shared beads: %v\n", err)
 	}
 
+	// Provision PRIME.md with Gas Town context for this worker.
+	// This is the fallback if SessionStart hook fails - ensures polecats
+	// always have GUPP and essential Gas Town context.
+	if err := beads.ProvisionPrimeMDForWorktree(clonePath); err != nil {
+		// Non-fatal - polecat can still work via hook, warn but don't fail
+		fmt.Printf("Warning: could not provision PRIME.md: %v\n", err)
+	}
+
 	// Copy overlay files from .runtime/overlay/ to polecat root.
 	// This allows services to have .env and other config files at their root.
 	if err := rig.CopyOverlay(m.rig.Path, clonePath); err != nil {
@@ -291,11 +307,12 @@ func (m *Manager) AddWithOptions(name string, opts AddOptions) (*Polecat, error)
 	// NOTE: Slash commands (.claude/commands/) are provisioned at town level by gt install.
 	// All agents inherit them via Claude's directory traversal - no per-workspace copies needed.
 
-	// Create agent bead for ZFC compliance (self-report state).
+	// Create or reopen agent bead for ZFC compliance (self-report state).
 	// State starts as "spawning" - will be updated to "working" when Claude starts.
 	// HookBead is set atomically at creation time if provided (avoids cross-beads routing issues).
+	// Uses CreateOrReopenAgentBead to handle re-spawning with same name (GH #332).
 	agentID := m.agentBeadID(name)
-	_, err = m.beads.CreateAgentBead(agentID, agentID, &beads.AgentFields{
+	_, err = m.beads.CreateOrReopenAgentBead(agentID, agentID, &beads.AgentFields{
 		RoleType:   "polecat",
 		Rig:        m.rig.Name,
 		AgentState: "spawning",
@@ -546,9 +563,10 @@ func (m *Manager) RepairWorktreeWithOptions(name string, force bool, opts AddOpt
 
 	// NOTE: Slash commands inherited from town level - no per-workspace copies needed.
 
-	// Create fresh agent bead for ZFC compliance
+	// Create or reopen agent bead for ZFC compliance
 	// HookBead is set atomically at recreation time if provided.
-	_, err = m.beads.CreateAgentBead(agentID, agentID, &beads.AgentFields{
+	// Uses CreateOrReopenAgentBead to handle re-spawning with same name (GH #332).
+	_, err = m.beads.CreateOrReopenAgentBead(agentID, agentID, &beads.AgentFields{
 		RoleType:   "polecat",
 		Rig:        m.rig.Name,
 		AgentState: "spawning",
@@ -572,8 +590,9 @@ func (m *Manager) RepairWorktreeWithOptions(name string, force bool, opts AddOpt
 	}, nil
 }
 
-// ReconcilePool syncs pool state with existing polecat directories.
-// This should be called to recover from crashes or stale state.
+// ReconcilePool derives pool InUse state from existing polecat directories.
+// This implements ZFC: InUse is discovered from filesystem, not tracked separately.
+// Called before each allocation to ensure InUse reflects reality.
 func (m *Manager) ReconcilePool() {
 	polecats, err := m.List()
 	if err != nil {
@@ -586,7 +605,7 @@ func (m *Manager) ReconcilePool() {
 	}
 
 	m.namePool.Reconcile(names)
-	_ = m.namePool.Save() // non-fatal: state file update
+	// Note: No Save() needed - InUse is transient state, only OverflowNext is persisted
 }
 
 // PoolStatus returns information about the name pool.

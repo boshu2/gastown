@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/style"
@@ -191,6 +192,16 @@ func runHandoff(cmd *cobra.Command, args []string) error {
 	if err := t.ClearHistory(pane); err != nil {
 		// Non-fatal - continue with respawn even if clear fails
 		style.PrintWarning("could not clear history: %v", err)
+	}
+
+	// Write handoff marker for successor detection (prevents handoff loop bug).
+	// The marker is cleared by gt prime after it outputs the warning.
+	// This tells the new session "you're post-handoff, don't re-run /handoff"
+	if cwd, err := os.Getwd(); err == nil {
+		runtimeDir := filepath.Join(cwd, constants.DirRuntime)
+		_ = os.MkdirAll(runtimeDir, 0755)
+		markerPath := filepath.Join(runtimeDir, constants.FileHandoffMarker)
+		_ = os.WriteFile(markerPath, []byte(currentSession), 0644)
 	}
 
 	// Use exec to respawn the pane - this kills us and restarts
@@ -622,16 +633,37 @@ func sendHandoffMail(subject, message string) (string, error) {
 }
 
 // looksLikeBeadID checks if a string looks like a bead ID.
-// Bead IDs have format: prefix-xxxx where prefix is 2+ letters and xxxx is alphanumeric.
+// Bead IDs have format: prefix-xxxx where prefix is 1-5 lowercase letters and xxxx is alphanumeric.
+// Examples: "gt-abc123", "bd-ka761", "hq-cv-abc", "beads-xyz", "ap-qtsup.16"
 func looksLikeBeadID(s string) bool {
-	// Common bead prefixes
-	prefixes := []string{"gt-", "hq-", "bd-", "beads-"}
-	for _, p := range prefixes {
-		if strings.HasPrefix(s, p) {
-			return true
+	// Find the first hyphen
+	idx := strings.Index(s, "-")
+	if idx < 1 || idx > 5 {
+		// No hyphen, or prefix is empty/too long
+		return false
+	}
+
+	// Check prefix is all lowercase letters
+	prefix := s[:idx]
+	for _, c := range prefix {
+		if c < 'a' || c > 'z' {
+			return false
 		}
 	}
-	return false
+
+	// Check there's something after the hyphen
+	rest := s[idx+1:]
+	if len(rest) == 0 {
+		return false
+	}
+
+	// Check rest starts with alphanumeric and contains only alphanumeric, dots, hyphens
+	first := rest[0]
+	if !((first >= 'a' && first <= 'z') || (first >= '0' && first <= '9')) {
+		return false
+	}
+
+	return true
 }
 
 // hookBeadForHandoff attaches a bead to the current agent's hook.
