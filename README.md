@@ -68,7 +68,7 @@ gt agents
 
 ## Core Concepts
 
-**The Mayor** is your AI coordinator. It's Claude Code with full context about your workspace, projects, and agents. The Mayor session (`gt prime`) is the primary way to interact with Gas Town - just tell it what you want to accomplish.
+**The Mayor** is your AI coordinator. It's Claude Code with full context about your workspace, projects, and agents. The Mayor session (`gt mayor attach`) is the primary way to interact with Gas Town - just tell it what you want to accomplish.
 
 ```
 Town (~/gt/)              Your workspace
