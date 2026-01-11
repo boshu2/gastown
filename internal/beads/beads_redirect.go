@@ -240,3 +240,85 @@ func SetupRedirect(townRoot, worktreePath string) error {
 
 	return nil
 }
+
+// ProvisionPrimeMD copies the PRIME.md template to the rig's .beads directory.
+// PRIME.md provides Gas Town context for all workers in the rig, including
+// the Propulsion Principle (GUPP) and essential startup/closeout protocols.
+// This is read by `bd prime` and output to the agent.
+//
+// The source template is embedded in the gastown repo at .beads/PRIME.md.
+// If the file already exists in the target, it is not overwritten.
+func ProvisionPrimeMD(rigBeadsPath string) error {
+	targetPath := filepath.Join(rigBeadsPath, "PRIME.md")
+
+	// Don't overwrite existing PRIME.md
+	if _, err := os.Stat(targetPath); err == nil {
+		return nil
+	}
+
+	// PRIME.md content - Gas Town worker context
+	primeMD := `# Gas Town Worker Context
+
+> **Context Recovery**: Run ` + "`gt prime`" + ` for full context after compaction or new session.
+
+## The Propulsion Principle (GUPP)
+
+**If you find work on your hook, YOU RUN IT.**
+
+No confirmation. No waiting. No announcements. The hook having work IS the assignment.
+This is physics, not politeness. Gas Town is a steam engine - you are a piston.
+
+**Failure mode we're preventing:**
+- Agent starts with work on hook
+- Agent announces itself and waits for human to say "ok go"
+- Human is AFK / trusting the engine to run
+- Work sits idle. The whole system stalls.
+
+## Startup Protocol
+
+1. Check your hook: ` + "`gt mol status`" + `
+2. If work is hooked → EXECUTE (no announcement, no waiting)
+3. If hook empty → Check mail: ` + "`gt mail inbox`" + `
+4. Still nothing? Wait for user instructions
+
+## Key Commands
+
+- ` + "`gt prime`" + ` - Get full role context (run after compaction)
+- ` + "`gt mol status`" + ` - Check your hooked work
+- ` + "`gt mail inbox`" + ` - Check for messages
+- ` + "`bd ready`" + ` - Find available work (no blockers)
+- ` + "`bd sync`" + ` - Sync beads changes
+
+## Session Close Protocol
+
+Before saying "done":
+1. git status (check what changed)
+2. git add <files> (stage code changes)
+3. bd sync (commit beads changes)
+4. git commit -m "..." (commit code)
+5. bd sync (commit any new beads changes)
+6. git push (push to remote)
+
+**Work is not done until pushed.**
+`
+
+	// Write PRIME.md
+	if err := os.WriteFile(targetPath, []byte(primeMD), 0644); err != nil {
+		return fmt.Errorf("writing PRIME.md: %w", err)
+	}
+
+	return nil
+}
+
+// ProvisionPrimeMDForWorktree provisions PRIME.md for a worktree.
+// This is a convenience wrapper that resolves the beads directory from the worktree path.
+func ProvisionPrimeMDForWorktree(worktreePath string) error {
+	beadsDir := filepath.Join(worktreePath, ".beads")
+
+	// Ensure .beads directory exists
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		return fmt.Errorf("creating .beads dir: %w", err)
+	}
+
+	return ProvisionPrimeMD(beadsDir)
+}
