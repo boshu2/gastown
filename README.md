@@ -1,481 +1,388 @@
 # Gas Town
 
-**Multi-agent orchestration system for Claude Code with persistent work tracking**
+Multi-agent orchestrator for Claude Code. Track work with convoys; sling to agents.
 
-## Overview
+## Why Gas Town?
 
-Gas Town is a workspace manager that lets you coordinate multiple Claude Code agents working on different tasks. Instead of losing context when agents restart, Gas Town persists work state in git-backed hooks, enabling reliable multi-agent workflows.
+| Without | With Gas Town |
+|---------|---------------|
+| Agents forget work after restart | Work persists on hooks - survives crashes, compaction, restarts |
+| Manual coordination | Agents have mailboxes, identities, and structured handoffs |
+| 4-10 agents is chaotic | Comfortably scale to 20-30 agents |
+| Work state in agent memory | Work state in Beads (git-backed ledger) |
 
-### What Problem Does This Solve?
+## Prerequisites
 
-| Challenge                       | Gas Town Solution                            |
-| ------------------------------- | -------------------------------------------- |
-| Agents lose context on restart  | Work persists in git-backed hooks            |
-| Manual agent coordination       | Built-in mailboxes, identities, and handoffs |
-| 4-10 agents become chaotic      | Scale comfortably to 20-30 agents            |
-| Work state lost in agent memory | Work state stored in Beads ledger            |
+- **Go 1.23+** - [go.dev/dl](https://go.dev/dl/)
+- **Git 2.25+** - for worktree support
+- **beads (bd)** - [github.com/steveyegge/beads](https://github.com/steveyegge/beads) - required for issue tracking
+- **tmux 3.0+** - recommended for the full experience (the Mayor session is the primary interface)
+- **Claude Code CLI** - [claude.ai/code](https://claude.ai/code)
 
-### Architecture
+## Quick Start
 
-```mermaid
-graph TB
-    Mayor[The Mayor<br/>AI Coordinator]
-    Town[Town Workspace<br/>~/gt/]
+```bash
+# Install
+go install github.com/steveyegge/gastown/cmd/gt@latest
 
-    Town --> Mayor
-    Town --> Rig1[Rig: Project A]
-    Town --> Rig2[Rig: Project B]
+# Ensure Go binaries are in your PATH (add to ~/.zshrc or ~/.bashrc)
+export PATH="$PATH:$HOME/go/bin"
 
-    Rig1 --> Crew1[Crew Member<br/>Your workspace]
-    Rig1 --> Hooks1[Hooks<br/>Persistent storage]
-    Rig1 --> Polecats1[Polecats<br/>Worker agents]
+# Create workspace (--git auto-initializes git repository)
+gt install ~/gt --git
+cd ~/gt
 
-    Rig2 --> Crew2[Crew Member]
-    Rig2 --> Hooks2[Hooks]
-    Rig2 --> Polecats2[Polecats]
+# Add a project
+gt rig add myproject https://github.com/you/repo.git
 
-    Hooks1 -.git worktree.-> GitRepo1[Git Repository]
-    Hooks2 -.git worktree.-> GitRepo2[Git Repository]
+# Create your personal workspace
+gt crew add <yourname> --rig myproject
 
-    style Mayor fill:#e1f5ff
-    style Town fill:#f0f0f0
-    style Rig1 fill:#fff4e1
-    style Rig2 fill:#fff4e1
+# Start working
+cd myproject/crew/<yourname>
+```
+
+For advanced multi-agent coordination, use the Mayor session:
+
+```bash
+gt mayor attach                        # Enter the Mayor's office
+```
+
+Inside the Mayor session, you're talking to Claude with full town context:
+
+> "Help me fix the authentication bug in myproject"
+
+The Mayor will create convoys, dispatch workers, and coordinate everything. You can also run CLI commands directly:
+
+```bash
+# Create a convoy and sling work (CLI workflow)
+gt convoy create "Feature X" issue-123 issue-456 --notify --human
+gt sling issue-123 myproject
+
+# Track progress
+gt convoy list
+
+# Switch between agent sessions
+gt agents
 ```
 
 ## Core Concepts
 
-### The Mayor 🎩
+**The Mayor** is your AI coordinator. It's Claude Code with full context about your workspace, projects, and agents. The Mayor session (`gt mayor attach`) is the primary way to interact with Gas Town - just tell it what you want to accomplish.
 
-Your primary AI coordinator. The Mayor is a Claude Code instance with full context about your workspace, projects, and agents. **Start here** - just tell the Mayor what you want to accomplish.
+```
+Town (~/gt/)              Your workspace
+├── Mayor                 Your AI coordinator (start here)
+├── Rig (project)         Container for a git project + its agents
+│   ├── Polecats          Workers (ephemeral, spawn → work → disappear)
+│   ├── Witness           Monitors workers, handles lifecycle
+│   └── Refinery          Merge queue processor
+```
 
-### Town 🏘️
+**Hook**: Each agent has a hook where work hangs. On wake, run what's on your hook.
 
-Your workspace directory (e.g., `~/gt/`). Contains all projects, agents, and configuration.
+**Beads**: Git-backed issue tracker. All work state lives here. [github.com/steveyegge/beads](https://github.com/steveyegge/beads)
 
-### Rigs 🏗️
+## Workflows
 
-Project containers. Each rig wraps a git repository and manages its associated agents.
+### Full Stack (Recommended)
 
-### Crew Members 👤
-
-Your personal workspace within a rig. Where you do hands-on work.
-
-### Polecats 🦨
-
-Ephemeral worker agents that spawn, complete a task, and disappear.
-
-### Hooks 🪝
-
-Git worktree-based persistent storage for agent work. Survives crashes and restarts.
-
-### Convoys 🚚
-
-Work tracking units. Bundle multiple issues/tasks that get assigned to agents.
-
-### Beads Integration 📿
-
-Git-backed issue tracking system that stores work state as structured data.
-
-> **New to Gas Town?** See the [Glossary](docs/glossary.md) for a complete guide to terminology and concepts.
-
-## Installation
-
-### Prerequisites
-
-- **Go 1.23+** - [go.dev/dl](https://go.dev/dl/)
-- **Git 2.25+** - for worktree support
-- **beads (bd) 0.44.0+** - [github.com/steveyegge/beads](https://github.com/steveyegge/beads) (required for custom type support)
-- **tmux 3.0+** - recommended for full experience
-- **Claude Code CLI** (default runtime) - [claude.ai/code](https://claude.ai/code)
-- **Codex CLI** (optional runtime) - [developers.openai.com/codex/cli](https://developers.openai.com/codex/cli)
-
-### Setup
+The primary Gas Town experience. Agents run in tmux sessions with the Mayor as your interface.
 
 ```bash
-# Install Gas Town
-go install github.com/steveyegge/gastown/cmd/gt@latest
+gt start                               # Start Gas Town (daemon + Mayor session)
+gt mayor attach                        # Enter Mayor session
 
-# Add Go binaries to PATH (add to ~/.zshrc or ~/.bashrc)
-export PATH="$PATH:$HOME/go/bin"
+# Inside Mayor session, just ask:
+# "Create a convoy for issues 123 and 456 in myproject"
+# "What's the status of my work?"
+# "Show me what the witness is doing"
 
-# Create workspace with git initialization
-gt install ~/gt --git
-cd ~/gt
-
-# Add your first project
-gt rig add myproject https://github.com/you/repo.git
-
-# Create your crew workspace
-gt crew add yourname --rig myproject
-cd myproject/crew/yourname
-
-# Start the Mayor session (your main interface)
-gt mayor attach
+# Or use CLI commands:
+gt convoy create "Feature X" issue-123 issue-456
+gt sling issue-123 myproject           # Spawns polecat automatically
+gt convoy list                         # Dashboard view
+gt agents                              # Navigate between sessions
 ```
 
-## Quick Start Guide
+### Minimal (No Tmux)
 
-### Basic Workflow
-
-```mermaid
-sequenceDiagram
-    participant You
-    participant Mayor
-    participant Convoy
-    participant Agent
-    participant Hook
-
-    You->>Mayor: Tell Mayor what to build
-    Mayor->>Convoy: Create convoy with issues
-    Mayor->>Agent: Sling issue to agent
-    Agent->>Hook: Store work state
-    Agent->>Agent: Complete work
-    Agent->>Convoy: Report completion
-    Mayor->>You: Summary of progress
-```
-
-### Example: Feature Development
-
-```bash
-# 1. Start the Mayor
-gt mayor attach
-
-# 2. In Mayor session, create a convoy
-gt convoy create "Feature X" issue-123 issue-456 --notify --human
-
-# 3. Assign work to an agent
-gt sling issue-123 myproject
-
-# 4. Track progress
-gt convoy list
-
-# 5. Monitor agents
-gt agents
-```
-
-## Common Workflows
-
-### Mayor Workflow (Recommended)
-
-**Best for:** Coordinating complex, multi-issue work
-
-```mermaid
-flowchart LR
-    Start([Start Mayor]) --> Tell[Tell Mayor<br/>what to build]
-    Tell --> Creates[Mayor creates<br/>convoy + agents]
-    Creates --> Monitor[Monitor progress<br/>via convoy list]
-    Monitor --> Done{All done?}
-    Done -->|No| Monitor
-    Done -->|Yes| Review[Review work]
-```
-
-**Commands:**
-
-```bash
-# Attach to Mayor
-gt mayor attach
-
-# In Mayor, create convoy and let it orchestrate
-gt convoy create "Auth System" issue-101 issue-102 --notify
-
-# Track progress
-gt convoy list
-```
-
-### Minimal Mode (No Tmux)
-
-Run individual runtime instances manually. Gas Town just tracks state.
+Run individual Claude Code instances manually. Gas Town just tracks state.
 
 ```bash
 gt convoy create "Fix bugs" issue-123  # Create convoy (sling auto-creates if skipped)
 gt sling issue-123 myproject           # Assign to worker
-claude --resume                        # Agent reads mail, runs work (Claude)
-# or: codex                            # Start Codex in the workspace
+claude --resume                        # Agent reads mail, runs work
 gt convoy list                         # Check progress
 ```
 
-### Beads Formula Workflow
+### Pick Your Roles
 
-**Best for:** Predefined, repeatable processes
+Gas Town is modular. Run what you need:
 
-Formulas are TOML-defined workflows stored in `.beads/formulas/`.
+- **Polecats only**: Manual spawning, no monitoring
+- **+ Witness**: Automatic worker lifecycle, stuck detection
+- **+ Refinery**: Merge queue, code review
+- **+ Mayor**: Cross-project coordination
 
-**Example Formula** (`.beads/formulas/release.formula.toml`):
+## Cooking Formulas
+
+Formulas define structured workflows. Cook them, sling them to agents.
+
+### Basic Example
 
 ```toml
-description = "Standard release process"
-formula = "release"
-version = 1
+# .beads/formulas/shiny.formula.toml
+formula = "shiny"
+description = "Design before code, review before ship"
 
-[vars.version]
-description = "The semantic version to release (e.g., 1.2.0)"
-required = true
+[[steps]]
+id = "design"
+description = "Think about architecture"
+
+[[steps]]
+id = "implement"
+needs = ["design"]
+
+[[steps]]
+id = "test"
+needs = ["implement"]
+
+[[steps]]
+id = "submit"
+needs = ["test"]
+```
+
+### Using Formulas
+
+```bash
+bd formula list                    # See available formulas
+bd cook shiny                      # Cook into a protomolecule
+bd mol pour shiny --var feature=auth   # Create runnable molecule
+gt convoy create "Auth feature" gt-xyz  # Track with convoy
+gt sling gt-xyz myproject          # Assign to worker
+gt convoy list                     # Monitor progress
+```
+
+### What Happens
+
+1. **Cook** expands the formula into a protomolecule (frozen template)
+2. **Pour** creates a molecule (live workflow) with steps as beads
+3. **Worker executes** each step, closing beads as it goes
+4. **Crash recovery**: Worker restarts, reads molecule, continues from last step
+
+### Example: Beads Release Molecule
+
+A real workflow for releasing a new beads version:
+
+```toml
+formula = "beads-release"
+description = "Version bump and release workflow"
 
 [[steps]]
 id = "bump-version"
-title = "Bump version"
-description = "Run ./scripts/bump-version.sh {{version}}"
+description = "Update version in version.go and CHANGELOG"
+
+[[steps]]
+id = "update-deps"
+needs = ["bump-version"]
+description = "Run go mod tidy, update go.sum"
 
 [[steps]]
 id = "run-tests"
-title = "Run tests"
-description = "Run make test"
-needs = ["bump-version"]
+needs = ["update-deps"]
+description = "Full test suite, check for regressions"
 
 [[steps]]
-id = "build"
-title = "Build"
-description = "Run make build"
+id = "build-binaries"
 needs = ["run-tests"]
+description = "Cross-compile for all platforms"
 
 [[steps]]
 id = "create-tag"
-title = "Create release tag"
-description = "Run git tag -a v{{version}} -m 'Release v{{version}}'"
-needs = ["build"]
+needs = ["build-binaries"]
+description = "Git tag with version, push to origin"
 
 [[steps]]
-id = "publish"
-title = "Publish"
-description = "Run ./scripts/publish.sh"
+id = "publish-release"
 needs = ["create-tag"]
+description = "Create GitHub release with binaries"
 ```
 
-**Execute:**
+Cook it, pour it, sling it. The polecat runs through each step, and if it crashes
+after `run-tests`, a new polecat picks up at `build-binaries`.
 
-```bash
-# List available formulas
-bd formula list
+### Formula Composition
 
-# Run a formula with variables
-bd cook release --var version=1.2.0
+```toml
+# Extend an existing formula
+formula = "shiny-enterprise"
+extends = ["shiny"]
 
-# Create formula instance for tracking
-bd mol pour release --var version=1.2.0
+[compose]
+aspects = ["security-audit"]  # Add cross-cutting concerns
 ```
-
-### Manual Convoy Workflow
-
-**Best for:** Direct control over work distribution
-
-```bash
-# Create convoy manually
-gt convoy create "Bug Fixes" --human
-
-# Add issues
-gt convoy add-issue bug-101 bug-102
-
-# Assign to specific agents
-gt sling bug-101 myproject/my-agent
-
-# Check status
-gt convoy show
-```
-
-## Runtime Configuration
-
-Gas Town supports multiple AI coding runtimes. Per-rig runtime settings are in `settings/config.json`.
-
-```json
-{
-  "runtime": {
-    "provider": "codex",
-    "command": "codex",
-    "args": [],
-    "prompt_mode": "none"
-  }
-}
-```
-
-**Notes:**
-
-- Claude uses hooks in `.claude/settings.json` for mail injection and startup.
-- For Codex, set `project_doc_fallback_filenames = ["CLAUDE.md"]` in
-  `~/.codex/config.toml` so role instructions are picked up.
-- For runtimes without hooks (e.g., Codex), Gas Town sends a startup fallback
-  after the session is ready: `gt prime`, optional `gt mail check --inject`
-  for autonomous roles, and `gt nudge deacon session-started`.
 
 ## Key Commands
 
-### Workspace Management
+### For Humans (Overseer)
 
 ```bash
-gt install <path>           # Initialize workspace
-gt rig add <name> <repo>    # Add project
-gt rig list                 # List projects
-gt crew add <name> --rig <rig>  # Create crew workspace
-```
-
-### Agent Operations
-
-```bash
-gt agents                   # List active agents
-gt sling <issue> <rig>      # Assign work to agent
-gt sling <issue> <rig> --agent cursor   # Override runtime for this sling/spawn
-gt mayor attach             # Start Mayor session
-gt mayor start --agent auggie           # Run Mayor with a specific agent alias
-gt prime                    # Alternative to mayor attach
-```
-
-**Built-in agent presets**: `claude`, `gemini`, `codex`, `cursor`, `auggie`, `amp`
-
-### Convoy (Work Tracking)
-
-```bash
-gt convoy create <name> [issues...] # Create convoy
-gt convoy list              # List all convoys
-gt convoy show [id]         # Show convoy details
-gt convoy add-issue <issue> # Add issue to convoy
+gt start                          # Start Gas Town (daemon + agents)
+gt shutdown                       # Graceful shutdown
+gt status                         # Town overview
+gt <role> attach                  # Jump into any agent session
+                                  # e.g., gt mayor attach, gt witness attach
 ```
 
 ### Configuration
 
 ```bash
-# Set custom agent command
-gt config agent set claude-glm "claude-glm --model glm-4"
-gt config agent set codex-low "codex --thinking low"
-
-# Set default agent
-gt config default-agent claude-glm
-
-# View config
-gt config show
+gt config agent list [--json]     # List all agents (built-in + custom)
+gt config agent get <name>        # Show agent configuration
+gt config agent set <name> <cmd>  # Create or update custom agent
+gt config agent remove <name>     # Remove custom agent (built-ins protected)
+gt config default-agent [name]    # Get or set town default agent
 ```
 
-### Beads Integration
+**Example**: Use a cheaper model for most work:
+```bash
+gt config agent set claude-glm "claude-glm --model glm-4"
+gt config default-agent claude-glm
+```
+
+Most other work happens through agents - just ask them.
+
+### For Agents
 
 ```bash
-bd formula list             # List formulas
-bd cook <formula>           # Execute formula
-bd mol pour <formula>       # Create trackable instance
-bd mol list                 # List active instances
+# Convoy (primary dashboard)
+gt convoy list                    # Active work across all rigs
+gt convoy status <id>             # Detailed convoy progress
+gt convoy create "name" <issues>  # Create new convoy
+
+# Work assignment
+gt sling <bead> <rig>             # Assign work to polecat
+bd ready                          # Show available work
+bd list --status=in_progress      # Active work
+
+# Communication
+gt mail inbox                     # Check messages
+gt mail send <addr> -s "..." -m "..."
+
+# Lifecycle
+gt handoff                        # Request session cycle
+gt peek <agent>                   # Check agent health
+
+# Diagnostics
+gt doctor                         # Health check
+gt doctor --fix                   # Auto-repair
 ```
-
-## Cooking Formulas
-
-Gas Town includes built-in formulas for common workflows. See `.beads/formulas/` for available recipes.
 
 ## Dashboard
 
-Gas Town includes a web dashboard for monitoring:
+Web-based dashboard for monitoring Gas Town activity.
 
 ```bash
-# Start dashboard
+# Start the dashboard
 gt dashboard --port 8080
 
 # Open in browser
 open http://localhost:8080
 ```
 
-Features:
+**Features:**
+- **Convoy tracking** - View all active convoys with progress bars and work status
+- **Polecat workers** - See active worker sessions and their activity status
+- **Refinery status** - Monitor merge queue and PR processing
+- **Auto-refresh** - Updates every 10 seconds via htmx
 
-- Real-time agent status
-- Convoy progress tracking
-- Hook state visualization
-- Configuration management
-
-## Advanced Concepts
-
-### The Propulsion Principle
-
-Gas Town uses git hooks as a propulsion mechanism. Each hook is a git worktree with:
-
-1. **Persistent state** - Work survives agent restarts
-2. **Version control** - All changes tracked in git
-3. **Rollback capability** - Revert to any previous state
-4. **Multi-agent coordination** - Shared through git
-
-### Hook Lifecycle
-
-```mermaid
-stateDiagram-v2
-    [*] --> Created: Agent spawned
-    Created --> Active: Work assigned
-    Active --> Suspended: Agent paused
-    Suspended --> Active: Agent resumed
-    Active --> Completed: Work done
-    Completed --> Archived: Hook archived
-    Archived --> [*]
-```
-
-### MEOW (Mayor-Enhanced Orchestration Workflow)
-
-MEOW is the recommended pattern:
-
-1. **Tell the Mayor** - Describe what you want
-2. **Mayor analyzes** - Breaks down into tasks
-3. **Convoy creation** - Mayor creates convoy with issues
-4. **Agent spawning** - Mayor spawns appropriate agents
-5. **Work distribution** - Issues slung to agents via hooks
-6. **Progress monitoring** - Track through convoy status
-7. **Completion** - Mayor summarizes results
+Work status indicators:
+| Status | Color | Meaning |
+|--------|-------|---------|
+| `complete` | Green | All tracked items done |
+| `active` | Green | Recent activity (< 1 min) |
+| `stale` | Yellow | Activity 1-5 min ago |
+| `stuck` | Red | Activity > 5 min ago |
+| `waiting` | Gray | No assignee/activity |
 
 ## Shell Completions
 
+Enable tab completion for `gt` commands:
+
+### Bash
+
 ```bash
-# Bash
-gt completion bash > /etc/bash_completion.d/gt
+# Add to ~/.bashrc
+source <(gt completion bash)
 
-# Zsh
+# Or install permanently
+gt completion bash > /usr/local/etc/bash_completion.d/gt
+```
+
+### Zsh
+
+```bash
+# Add to ~/.zshrc (before compinit)
+source <(gt completion zsh)
+
+# Or install to fpath
 gt completion zsh > "${fpath[1]}/_gt"
+```
 
-# Fish
+### Fish
+
+```bash
 gt completion fish > ~/.config/fish/completions/gt.fish
 ```
 
-## Project Roles
+## Roles
 
-| Role            | Description        | Primary Interface    |
-| --------------- | ------------------ | -------------------- |
-| **Mayor**       | AI coordinator     | `gt mayor attach`    |
-| **Human (You)** | Crew member        | Your crew directory  |
-| **Polecat**     | Worker agent       | Spawned by Mayor     |
-| **Hook**        | Persistent storage | Git worktree         |
-| **Convoy**      | Work tracker       | `gt convoy` commands |
+| Role | Scope | Job |
+|------|-------|-----|
+| **Overseer** | Human | Sets strategy, reviews output, handles escalations |
+| **Mayor** | Town-wide | Cross-rig coordination, work dispatch |
+| **Deacon** | Town-wide | Daemon process, agent lifecycle, plugin execution |
+| **Witness** | Per-rig | Monitor polecats, nudge stuck workers |
+| **Refinery** | Per-rig | Merge queue, PR review, integration |
+| **Polecat** | Per-task | Execute work, file discovered issues, request shutdown |
 
-## Tips
+## The Propulsion Principle
 
-- **Always start with the Mayor** - It's designed to be your primary interface
-- **Use convoys for coordination** - They provide visibility across agents
-- **Leverage hooks for persistence** - Your work won't disappear
-- **Create formulas for repeated tasks** - Save time with Beads recipes
-- **Monitor the dashboard** - Get real-time visibility
-- **Let the Mayor orchestrate** - It knows how to manage agents
+> If your hook has work, RUN IT.
 
-## Troubleshooting
-
-### Agents lose connection
-
-Check hooks are properly initialized:
-
-```bash
-gt hooks list
-gt hooks repair
-```
-
-### Convoy stuck
-
-Force refresh:
-
-```bash
-gt convoy refresh <convoy-id>
-```
-
-### Mayor not responding
-
-Restart Mayor session:
-
-```bash
-gt mayor detach
-gt mayor attach
-```
-
-## License
-
-MIT License - see LICENSE file for details
+Agents wake up, check their hook, execute the molecule. No waiting for commands.
+Molecules survive crashes - any agent can continue where another left off.
 
 ---
 
-**Getting Started:** Run `gt install ~/gt --git && cd ~/gt && gt config agent list && gt mayor attach` (or `gt mayor attach --agent codex`) and tell the Mayor what you want to build!
+## Optional: MEOW Deep Dive
+
+**M**olecular **E**xpression **O**f **W**ork - the full algebra.
+
+### States of Matter
+
+| Phase | Name | Storage | Behavior |
+|-------|------|---------|----------|
+| Ice-9 | Formula | `.beads/formulas/` | Source template, composable |
+| Solid | Protomolecule | `.beads/` | Frozen template, reusable |
+| Liquid | Mol | `.beads/` | Flowing work, persistent |
+| Vapor | Wisp | `.beads/` (ephemeral flag) | Transient, for patrols |
+
+*(Protomolecules are an homage to The Expanse. Ice-9 is a nod to Vonnegut.)*
+
+### Operators
+
+| Operator | From → To | Effect |
+|----------|-----------|--------|
+| `cook` | Formula → Protomolecule | Expand macros, flatten |
+| `pour` | Proto → Mol | Instantiate as persistent |
+| `wisp` | Proto → Wisp | Instantiate as ephemeral |
+| `squash` | Mol/Wisp → Digest | Condense to permanent record |
+| `burn` | Wisp → ∅ | Discard without record |
+
+---
+
+## License
+
+MIT
