@@ -32,7 +32,7 @@ func isTrackedByConvoy(beadID string) string {
 
 	// Use bd dep list to find what tracks this issue (direction=up)
 	// Filter for open convoys in the results
-	depCmd := exec.Command("bd", "--no-daemon", "dep", "list", beadID, "--direction=up", "--type=tracks", "--json")
+	depCmd := exec.Command("bd", "dep", "list", beadID, "--direction=up", "--type=tracks", "--json")
 	depCmd.Dir = townRoot
 
 	out, err := depCmd.Output()
@@ -89,7 +89,7 @@ func createAutoConvoy(beadID, beadTitle string) (string, error) {
 		createArgs = append(createArgs, "--force")
 	}
 
-	createCmd := exec.Command("bd", append([]string{"--no-daemon"}, createArgs...)...)
+	createCmd := exec.Command("bd", createArgs...)
 	createCmd.Dir = townBeads
 	createCmd.Stderr = os.Stderr
 
@@ -99,7 +99,7 @@ func createAutoConvoy(beadID, beadTitle string) (string, error) {
 
 	// Add tracking relation: convoy tracks the issue
 	trackBeadID := formatTrackBeadID(beadID)
-	depArgs := []string{"--no-daemon", "dep", "add", convoyID, trackBeadID, "--type=tracks"}
+	depArgs := []string{"dep", "add", convoyID, trackBeadID, "--type=tracks"}
 	depCmd := exec.Command("bd", depArgs...)
 	depCmd.Dir = townBeads
 	depCmd.Stderr = os.Stderr
